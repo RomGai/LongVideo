@@ -24,7 +24,7 @@ def preprocess_video(video_path, frame_interval=5, transform=None):
 # ====== 批处理整个文件夹 ======
 def compute_video_features(
     segment_infos: Iterable[Dict],
-    frame_interval: int = 5,
+    frame_interval: int = 10,
 ) -> List[Dict]:
     """为给定的视频片段计算视觉特征。
 

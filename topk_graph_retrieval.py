@@ -22,7 +22,7 @@ def _encode_query(query: str) -> torch.Tensor:
 def retrieve_topk_segments(
     graph: nx.Graph,
     query: str,
-    top_k: int = 1,
+    top_k: int = 3,
     spatial_k: int = 3,
 ) -> List[Dict]:
     """根据文本查询在图中检索最相关的片段。

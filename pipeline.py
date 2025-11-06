@@ -16,13 +16,13 @@ def run_pipeline(
     video_path: str,
     query: str,
     output_dir: str,
-    frame_interval: int = 5,
-    n_clusters: int = 10,
+    frame_interval: int = 30,
+    n_clusters: int = 30,
     min_segment_sec: float = 0.4,
-    embedding_frame_interval: int = 5,
-    top_k: int = 1,
+    embedding_frame_interval: int = 10,
+    top_k: int = 3,
     spatial_k: int = 3,
-    rerank_frame_interval: int = 10,
+    rerank_frame_interval: int = 5,
     top_frames: int = 128,
     temporal_weight: float = 1.0,
 ) -> List[Dict]:
@@ -33,6 +33,12 @@ def run_pipeline(
     os.makedirs(segments_dir, exist_ok=True)
 
     output_dir = os.path.abspath(output_dir)
+    # 确保最终输出目录不在临时工作区中，避免清理临时目录时误删最终结果
+    if os.path.commonpath([output_dir, temp_root]) == temp_root:
+        raise ValueError(
+            "Output directory must be outside the pipeline's temporary workspace."
+        )
+
     os.makedirs(output_dir, exist_ok=True)
 
     try:

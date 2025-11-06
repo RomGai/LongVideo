@@ -15,7 +15,7 @@ processor = AutoProcessor.from_pretrained(visual_model_id)
 vis_emb_model.visual.to("cuda").eval()
 
 # ========== 提取帧向量 ==========
-def extract_visual_embeddings(video_path, frame_interval=5):
+def extract_visual_embeddings(video_path, frame_interval=30):
     cap = cv2.VideoCapture(video_path)
     frames, embeddings = [], []
     idx = 0
@@ -87,7 +87,7 @@ def export_segments(
     video_path,
     change_points,
     output_prefix="segment",
-    min_segment_sec=0.4,
+    min_segment_sec=10,
     output_dir="segments",
 ):
     """导出视频片段，并返回片段的元信息。
