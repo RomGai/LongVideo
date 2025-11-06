@@ -1,6 +1,7 @@
 import core.vision_encoder.pe as pe
 import core.vision_encoder.transforms as transforms
 import os
+from typing import Iterable, List, Dict
 import torch
 from PIL import Image
 import decord
@@ -21,32 +22,61 @@ def preprocess_video(video_path, frame_interval=5, transform=None):
     return torch.stack(preprocessed_frames, dim=0)
 
 # ====== 批处理整个文件夹 ======
-video_dir = "../segments"
+def compute_video_features(
+    segment_infos: Iterable[Dict],
+    frame_interval: int = 5,
+) -> List[Dict]:
+    """为给定的视频片段计算视觉特征。
 
-results = []
+    Args:
+        segment_infos: 包含 ``path`` 键的片段信息迭代器。
+        frame_interval: 抽帧间隔。
 
-with torch.no_grad():
-    for fname in os.listdir(video_dir):
-        if not fname.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
-            continue
+    Returns:
+        list[dict]: 每个元素包含原始 ``segment_info``，并额外附带 ``image_features``。
+    """
 
-        video_path = os.path.join(video_dir, fname)
-        try:
-            video = preprocess_video(video_path, frame_interval=5, transform=preprocess)
-            video = video.unsqueeze(0).to(device)
+    results: List[Dict] = []
 
-            image_features = model.encode_video(video)
-            image_features /= image_features.norm(dim=-1, keepdim=True) #1,1280
+    with torch.no_grad():
+        for info in segment_infos:
+            video_path = info["path"]
+            if not os.path.exists(video_path):
+                print(f"[x] Missing file: {video_path}")
+                continue
 
-            results.append({
-                "video_path": video_path,
-                "image_features": image_features.cpu(),
-            })
-            print(f"[✓] Processed {fname}")
+            try:
+                video = preprocess_video(video_path, frame_interval=frame_interval, transform=preprocess)
+                video = video.unsqueeze(0).to(device)
 
-        except Exception as e:
-            print(f"[x] Failed on {fname}: {e}")
+                image_features = model.encode_video(video)
+                image_features /= image_features.norm(dim=-1, keepdim=True)
 
-# 保存为 .pt
-torch.save(results, "video_features_results.pt")
-print(f"Saved {len(results)} videos to video_features_results.pt")
+                enriched = dict(info)
+                enriched["image_features"] = image_features.cpu()
+                results.append(enriched)
+                print(f"[✓] Processed {os.path.basename(video_path)}")
+
+            except Exception as e:
+                print(f"[x] Failed on {video_path}: {e}")
+
+    return results
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Compute CLIP features for video segments.")
+    parser.add_argument("segment_info", help="JSON file containing a list of segment metadata.")
+    parser.add_argument("output", help="Path to save the resulting features (pt file).")
+    parser.add_argument("--frame-interval", type=int, default=5, dest="frame_interval")
+
+    args = parser.parse_args()
+
+    with open(args.segment_info, "r", encoding="utf-8") as f:
+        infos = json.load(f)
+
+    results = compute_video_features(infos, frame_interval=args.frame_interval)
+    torch.save(results, args.output)
+    print(f"Saved {len(results)} segments to {args.output}")

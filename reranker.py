@@ -1,32 +1,32 @@
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
 from qwen_vl_utils import process_vision_info
 import torch
 import cv2
 import os
+import shutil
+import tempfile
+from typing import List, Dict, Iterable
 from peft import PeftModel
+
 adapter_dir = "./result"  # 👈 替换为你训练保存LoRA的目录
-# ===== 1️⃣ 模型加载 =====
+
 model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
     "Qwen/Qwen2.5-VL-3B-Instruct", torch_dtype="auto", device_map="auto"
 )
-
-# 2. 加载 LoRA adapter
 model = PeftModel.from_pretrained(model, adapter_dir)
-
-# 3. 合并权重（可选，但推荐推理前执行）
 model = model.merge_and_unload()
 model.eval()
 
 processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-3B-Instruct")
-tokenizer = processor.tokenizer
 
-id_1 = tokenizer.convert_tokens_to_ids("1")
-id_2 = tokenizer.convert_tokens_to_ids("2")
-id_3 = tokenizer.convert_tokens_to_ids("3")
-id_4 = tokenizer.convert_tokens_to_ids("4")
-id_5 = tokenizer.convert_tokens_to_ids("5")
+_tokenizer = processor.tokenizer
+id_1 = _tokenizer.convert_tokens_to_ids("1")
+id_2 = _tokenizer.convert_tokens_to_ids("2")
+id_3 = _tokenizer.convert_tokens_to_ids("3")
+id_4 = _tokenizer.convert_tokens_to_ids("4")
+id_5 = _tokenizer.convert_tokens_to_ids("5")
 
-# ===== 2️⃣ 计算logits概率 =====
+
 @torch.no_grad()
 def compute_logits(inputs, **kwargs):
     batch_scores = model(**inputs).logits[:, -1, :]
@@ -40,77 +40,165 @@ def compute_logits(inputs, **kwargs):
     scores = batch_scores.exp().tolist()
     return scores
 
-# ===== 3️⃣ 格式化消息 =====
+
 def format_message(query, image_path):
     return [
         {
             "role": "user",
             "content": [
                 {"type": "image", "image": image_path},
-                {"type": "text", "text": f"""Given the image, which is a frame from a video, rate how relevant this frame is for answering the question: '{query}'.
-                Output only one number from 1 to 5, where:
-                1 = completely irrelevant — the frame provides no visual or contextual information related to the question or its answer.
-                2 = slightly relevant — the frame shows general background or context, but it is unlikely to contribute to answering.
-                3 = moderately relevant — the frame includes partial clues or indirect context that might help infer the answer, but the key evidence is missing.
-                4 = mostly relevant — the frame provides substantial visual or contextual information that can be used to answer the question, though not fully decisive.
-                5 = highly relevant — the frame clearly contains the decisive evidence or strong contextual cues that directly or indirectly support the correct answer."""},
+                {
+                    "type": "text",
+                    "text": (
+                        "Given the image, which is a frame from a video, rate how relevant this frame is for "
+                        f"answering the question: '{query}'.\n"
+                        "Output only one number from 1 to 5, where:\n"
+                        "1 = completely irrelevant — the frame provides no visual or contextual information related to the "
+                        "question or its answer.\n"
+                        "2 = slightly relevant — the frame shows general background or context, but it is unlikely to "
+                        "contribute to answering.\n"
+                        "3 = moderately relevant — the frame includes partial clues or indirect context that might help "
+                        "infer the answer, but the key evidence is missing.\n"
+                        "4 = mostly relevant — the frame provides substantial visual or contextual information that can be "
+                        "used to answer the question, though not fully decisive.\n"
+                        "5 = highly relevant — the frame clearly contains the decisive evidence or strong contextual cues "
+                        "that directly or indirectly support the correct answer."
+                    ),
+                },
             ],
         }
     ]
 
-# ===== 4️⃣ 评估函数（接受视频） =====
-def evaluate_video(video_path, query, frame_interval=10, temp_dir="frames_tmp"):
-    """
-    对视频的每一帧（间隔取样）与 query 组合打分。
-    frame_interval: 每隔多少帧取一帧
-    """
+
+def _score_segment_frames(
+    segment_info: Dict,
+    query: str,
+    frame_interval: int,
+    temp_dir: str,
+) -> List[Dict]:
     os.makedirs(temp_dir, exist_ok=True)
+    video_path = segment_info["path"]
     cap = cv2.VideoCapture(video_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    fps = int(cap.get(cv2.CAP_PROP_FPS)) or segment_info.get("fps", 0) or 1
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"Video loaded: {video_path} | {total_frames} frames at {fps} FPS")
 
-    frame_paths = []
+    frame_results: List[Dict] = []
+
     idx = 0
     success, frame = cap.read()
     while success:
         if idx % frame_interval == 0:
-            frame_path = os.path.join(temp_dir, f"frame_{idx:05d}.jpg")
+            frame_filename = f"seg{segment_info.get('segment_index', 0):04d}_frame_{idx:05d}.jpg"
+            frame_path = os.path.join(temp_dir, frame_filename)
             cv2.imwrite(frame_path, frame)
-            frame_paths.append(frame_path)
+
+            messages = format_message(query, frame_path)
+            text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            image_inputs, video_inputs = process_vision_info(messages)
+            inputs = processor(
+                text=[text],
+                images=image_inputs,
+                videos=video_inputs,
+                padding=True,
+                return_tensors="pt",
+            ).to("cuda")
+
+            probs = compute_logits(inputs)[0]
+            weighted_sum = sum((i + 1) * p for i, p in enumerate(probs))
+
+            global_frame_index = segment_info.get("start_frame", 0) + idx
+            timestamp = global_frame_index / fps if fps else 0.0
+
+            frame_results.append(
+                {
+                    "temp_path": frame_path,
+                    "score": weighted_sum,
+                    "segment_index": segment_info.get("segment_index"),
+                    "segment_path": video_path,
+                    "frame_in_segment": idx,
+                    "global_frame_index": global_frame_index,
+                    "timestamp": timestamp,
+                }
+            )
+
         success, frame = cap.read()
         idx += 1
+
     cap.release()
-    print(f"Extracted {len(frame_paths)} frames")
+    print(f"Extracted {len(frame_results)} frames for scoring")
 
-    results = []
-    for frame_path in frame_paths:
-        messages = format_message(query, frame_path)
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        image_inputs, video_inputs = process_vision_info(messages)
-        inputs = processor(
-            text=[text],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            return_tensors="pt",
-        ).to("cuda")
+    return frame_results
 
-        probs = compute_logits(inputs)[0]
-        weighted_sum = sum((i + 1) * p for i, p in enumerate(probs))
-        results.append({"frame": frame_path, "score": weighted_sum})
 
-    # 按相似度排序
-    results.sort(key=lambda x: x["score"], reverse=True)
+def rerank_segments(
+    segment_infos: Iterable[Dict],
+    query: str,
+    frame_interval: int = 10,
+    top_frames: int = 128,
+    output_dir: str = "reranker_output",
+) -> List[Dict]:
+    """对检索到的片段进行帧级重排序，并导出最相关的帧。"""
 
-    return results
+    temp_dir = tempfile.mkdtemp(prefix="frames_tmp_")
+    os.makedirs(output_dir, exist_ok=True)
 
-# ===== 5️⃣ 示例运行 =====
+    try:
+        all_frames: List[Dict] = []
+        for info in segment_infos:
+            all_frames.extend(
+                _score_segment_frames(info, query=query, frame_interval=frame_interval, temp_dir=temp_dir)
+            )
+
+        if not all_frames:
+            return []
+
+        all_frames.sort(key=lambda x: x["score"], reverse=True)
+        selected = all_frames[:top_frames]
+        selected.sort(key=lambda x: (x["timestamp"], x["segment_index"], x["frame_in_segment"]))
+
+        results: List[Dict] = []
+        for rank, frame_info in enumerate(selected, start=1):
+            filename = (
+                f"rank_{rank:03d}_seg{frame_info['segment_index']:04d}_"
+                f"frame{frame_info['frame_in_segment']:05d}.jpg"
+            )
+            dest_path = os.path.join(output_dir, filename)
+            shutil.copy2(frame_info["temp_path"], dest_path)
+
+            enriched = dict(frame_info)
+            enriched["rank"] = rank
+            enriched["output_path"] = dest_path
+            results.append(enriched)
+
+        return results
+
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 if __name__ == "__main__":
-    query = "why did the boy stopped walking and looked up"
-    video_path = "2503404966.mp4"  # 改成你的视频路径
-    results = evaluate_video(video_path, query, frame_interval=5)
-    # for r in results:
-    #     print(f"Frame: {r['frame']}\nRelevance Score (1–5): {r['score']:.3f}\n")
-    for r in results[:30]:  # 打印前10个最相关帧
-        print(f"Frame: {r['frame']}\nRelevance Score (1–5): {r['score']:.3f}\n")
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description="Rerank frames for selected segments")
+    parser.add_argument("segments", help="JSON file with segment infos")
+    parser.add_argument("query", help="Text query")
+    parser.add_argument("--frame-interval", type=int, default=10, dest="frame_interval")
+    parser.add_argument("--top-frames", type=int, default=128, dest="top_frames")
+    parser.add_argument("--output", default="reranker_output")
+
+    args = parser.parse_args()
+
+    with open(args.segments, "r", encoding="utf-8") as f:
+        infos = json.load(f)
+
+    results = rerank_segments(
+        infos,
+        query=args.query,
+        frame_interval=args.frame_interval,
+        top_frames=args.top_frames,
+        output_dir=args.output,
+    )
+
+    print(json.dumps(results, ensure_ascii=False, indent=2))

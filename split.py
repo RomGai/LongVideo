@@ -83,17 +83,27 @@ def cluster_and_segment(video_path, embeddings, frames, method="kmeans", n_clust
 #     print(f"✅ Exported {seg_id} segments.")
 
 
-def export_segments(video_path, change_points, output_prefix="segment", min_segment_sec=0.4, output_dir="segments"):
-    """
-    导出视频片段：若单个片段小于阈值（秒），则合并到下一个片段。
-    连续短片段会整体合并到后一个长片段中，并将输出保存到指定文件夹中。
+def export_segments(
+    video_path,
+    change_points,
+    output_prefix="segment",
+    min_segment_sec=0.4,
+    output_dir="segments",
+):
+    """导出视频片段，并返回片段的元信息。
+
+    若单个片段小于阈值（秒），则合并到下一个片段。连续短片段会整体
+    合并到后一个长片段中，并将输出保存到指定文件夹中。
 
     Args:
-        video_path (str): 视频路径
-        change_points (list[int]): 切割帧号列表
-        output_prefix (str): 输出文件名前缀
-        min_segment_sec (float): 最小片段时长（秒），小于该值的会合并到下一个片段
-        output_dir (str): 输出文件夹路径（若不存在将自动创建）
+        video_path (str): 视频路径。
+        change_points (list[int]): 切割帧号列表。
+        output_prefix (str): 输出文件名前缀。
+        min_segment_sec (float): 最小片段时长（秒），小于该值的会合并到下一个片段。
+        output_dir (str): 输出文件夹路径（若不存在将自动创建）。
+
+    Returns:
+        list[dict]: 每个片段的元信息，包含 ``path``、``start_frame``、``end_frame`` 和 ``fps``。
     """
     print("导出视频")
 
@@ -123,6 +133,7 @@ def export_segments(video_path, change_points, output_prefix="segment", min_segm
             i += 1
 
     # ===== 导出视频阶段 =====
+    segment_infos = []
     seg_id = 0
     for i in range(len(merged_points) - 1):
         start, end = merged_points[i], merged_points[i + 1]
@@ -139,10 +150,21 @@ def export_segments(video_path, change_points, output_prefix="segment", min_segm
 
         out.release()
         print(f"🎬 Saved: {out_path}")
+        segment_infos.append(
+            {
+                "path": out_path,
+                "start_frame": start,
+                "end_frame": end,
+                "fps": fps,
+                "segment_index": seg_id,
+            }
+        )
         seg_id += 1
 
     cap.release()
     print(f"✅ Exported {seg_id} segments to folder: {os.path.abspath(output_dir)}")
+
+    return segment_infos
 
 
 # ========== 主流程 ==========
