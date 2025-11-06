@@ -79,7 +79,7 @@ def _score_segment_frames(
     os.makedirs(temp_dir, exist_ok=True)
     video_path = segment_info["path"]
     cap = cv2.VideoCapture(video_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS)) or segment_info.get("fps", 0) or 1
+    fps = int(cap.get(cv2.CAP_PROP_FPS)) or int(segment_info.get("fps", 0) or 0) or 1
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"Video loaded: {video_path} | {total_frames} frames at {fps} FPS")
 
@@ -89,7 +89,13 @@ def _score_segment_frames(
     success, frame = cap.read()
     while success:
         if idx % frame_interval == 0:
-            frame_filename = f"seg{segment_info.get('segment_index', 0):04d}_frame_{idx:05d}.jpg"
+            segment_index = segment_info.get("segment_index")
+            if segment_index is not None:
+                segment_index = int(segment_index)
+            else:
+                segment_index = 0
+
+            frame_filename = f"seg{segment_index:04d}_frame_{idx:05d}.jpg"
             frame_path = os.path.join(temp_dir, frame_filename)
             cv2.imwrite(frame_path, frame)
 
@@ -107,14 +113,17 @@ def _score_segment_frames(
             probs = compute_logits(inputs)[0]
             weighted_sum = sum((i + 1) * p for i, p in enumerate(probs))
 
-            global_frame_index = segment_info.get("start_frame", 0) + idx
+            start_frame = segment_info.get("start_frame", 0)
+            if start_frame is None:
+                start_frame = 0
+            global_frame_index = int(start_frame) + idx
             timestamp = global_frame_index / fps if fps else 0.0
 
             frame_results.append(
                 {
                     "temp_path": frame_path,
                     "score": weighted_sum,
-                    "segment_index": segment_info.get("segment_index"),
+                    "segment_index": segment_index,
                     "segment_path": video_path,
                     "frame_in_segment": idx,
                     "global_frame_index": global_frame_index,

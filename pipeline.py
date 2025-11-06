@@ -3,13 +3,40 @@ import json
 import os
 import shutil
 import tempfile
-from typing import List, Dict
+from typing import Any, List, Dict
+
+import numpy as np
+import torch
 
 from split import extract_visual_embeddings, cluster_and_segment, export_segments
 from chunk_embedding import compute_video_features
 from build_graph import build_spatiotemporal_graph
 from topk_graph_retrieval import retrieve_topk_segments
 from reranker import rerank_segments
+
+
+def _to_serializable(obj: Any) -> Any:
+    """Recursively convert objects containing numpy/torch types for JSON dumping."""
+
+    if isinstance(obj, dict):
+        return {key: _to_serializable(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_to_serializable(item) for item in obj]
+    if isinstance(obj, tuple):
+        return [_to_serializable(item) for item in obj]
+
+    if isinstance(obj, (np.generic,)):
+        return obj.item()
+
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+
+    if isinstance(obj, torch.Tensor):
+        if obj.ndim == 0:
+            return obj.item()
+        return obj.detach().cpu().tolist()
+
+    return obj
 
 
 def run_pipeline(
@@ -84,7 +111,7 @@ def run_pipeline(
 
         results_path = os.path.join(output_dir, "rerank_results.json")
         with open(results_path, "w", encoding="utf-8") as f:
-            json.dump(final_frames, f, ensure_ascii=False, indent=2)
+            json.dump(_to_serializable(final_frames), f, ensure_ascii=False, indent=2)
 
         return final_frames
 
