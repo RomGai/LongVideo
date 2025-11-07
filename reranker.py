@@ -5,6 +5,7 @@ import cv2
 import os
 import shutil
 import tempfile
+from collections import defaultdict
 from typing import List, Dict, Iterable
 from peft import PeftModel
 
@@ -146,8 +147,12 @@ def rerank_segments(
     frame_interval: int = 10,
     top_frames: int = 128,
     output_dir: str = "reranker_output",
+    min_frames_per_clip: int = 6,
 ) -> List[Dict]:
-    """对检索到的片段进行帧级重排序，并导出最相关的帧。"""
+    """对检索到的片段进行帧级重排序，并导出最相关的帧。
+
+    在全局排序前，会优先保留每个片段中得分最高的 ``min_frames_per_clip`` 帧，
+    以避免高分片段被完全过滤掉。"""
 
     temp_dir = tempfile.mkdtemp(prefix="frames_tmp_")
     os.makedirs(output_dir, exist_ok=True)
@@ -162,12 +167,44 @@ def rerank_segments(
         if not all_frames:
             return []
 
-        all_frames.sort(key=lambda x: x["score"], reverse=True)
-        selected = all_frames[:top_frames]
-        selected.sort(key=lambda x: (x["timestamp"], x["segment_index"], x["frame_in_segment"]))
+        if top_frames <= 0:
+            return []
+
+        grouped_frames: Dict[int, List[Dict]] = defaultdict(list)
+        for frame_info in all_frames:
+            grouped_frames[int(frame_info["segment_index"])].append(frame_info)
+
+        for frame_list in grouped_frames.values():
+            frame_list.sort(key=lambda x: x["score"], reverse=True)
+
+        initial_selection: List[Dict] = []
+        if min_frames_per_clip > 0:
+            for frame_list in grouped_frames.values():
+                initial_selection.extend(frame_list[:min_frames_per_clip])
+
+        initial_selection.sort(key=lambda x: x["score"], reverse=True)
+        if len(initial_selection) > top_frames:
+            selected_frames = initial_selection[:top_frames]
+        else:
+            selected_frames = list(initial_selection)
+            remaining_frames: List[Dict] = []
+            for frame_list in grouped_frames.values():
+                start_idx = min_frames_per_clip if min_frames_per_clip > 0 else 0
+                remaining_frames.extend(frame_list[start_idx:])
+
+            remaining_frames.sort(key=lambda x: x["score"], reverse=True)
+            for frame_info in remaining_frames:
+                if len(selected_frames) >= top_frames:
+                    break
+                selected_frames.append(frame_info)
+
+        selected_frames = selected_frames[:top_frames]
+        selected_frames.sort(
+            key=lambda x: (x["timestamp"], x["segment_index"], x["frame_in_segment"])
+        )
 
         results: List[Dict] = []
-        for rank, frame_info in enumerate(selected, start=1):
+        for rank, frame_info in enumerate(selected_frames, start=1):
             filename = (
                 f"rank_{rank:03d}_seg{frame_info['segment_index']:04d}_"
                 f"frame{frame_info['frame_in_segment']:05d}.jpg"
