@@ -121,20 +121,21 @@ def run_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the full long-video retrieval pipeline")
-    parser.add_argument("--video", type=str, default="./videos/86CxyhFV9MI.mp4",help="Path to the input video")
-    parser.add_argument("--query", type=str, default="Question: In the video, which subtitles appear at the same time as the man with black hair, dressed in grey clothes with black sleeves, on stage? A. promisc has come to an end, in and run away countless times, i was just scared, i still. B. run away countless times, i was just scared, i still and front of our crown, like a world of souls,. C. promisc has come to an end, in and front of our crown, like a world of souls,. D. promisc has come to an end, in and captain of the godson, three three three three three three. Answer with the option's letter from the given choices directly.",help="Text query for retrieval")
+    parser.add_argument("--video", type=str, default="./videos/f44gpGR4uWU.mp4",help="Path to the input video")
+    parser.add_argument("--query", type=str, default="Question: In the opening of the video, there's a man wearing a black top and a gray hat in the car. In which of the following scenes does he appear later? A. In the water. B. In the car, on the sofa. C. On the mountain. D. In the bathroom. Answer with the option's letter from the given choices directly.",help="Text query for retrieval")
     parser.add_argument("--output", type=str, default="./output/",help="Directory to save the final ranked frames")
     parser.add_argument("--frame-interval", type=int, default=30, dest="frame_interval")
-    parser.add_argument("--clusters", type=int, default=20, dest="n_clusters")
-    parser.add_argument("--min-segment-sec", type=float, default=5, dest="min_segment_sec")
+    parser.add_argument("--clusters", type=int, default=30, dest="n_clusters")
+    parser.add_argument("--min-segment-sec", type=float, default=1, dest="min_segment_sec")
     parser.add_argument("--embed-frame-interval", type=int, default=10, dest="embedding_frame_interval")
-    parser.add_argument("--top-k", type=int, default=2, dest="top_k")
-    parser.add_argument("--spatial-k", type=int, default=2, dest="spatial_k")
+    parser.add_argument("--top-k", type=int, default=3, dest="top_k")
+    parser.add_argument("--spatial-k", type=int, default=3, dest="spatial_k")
     parser.add_argument("--rerank-frame-interval", type=int, default=5, dest="rerank_frame_interval")
-    parser.add_argument("--top-frames", type=int, default=128, dest="top_frames")
+    parser.add_argument("--top-frames", type=int, default=256, dest="top_frames")
     parser.add_argument("--temporal-weight", type=float, default=1.0, dest="temporal_weight")
 
     args = parser.parse_args()
+
 
     results = run_pipeline(
         video_path=args.video,
