@@ -209,9 +209,9 @@ def rerank_segments(
             timestamp = float(frame_info.get("timestamp") or 0.0)
             timestamp_tag = timestamp_label(timestamp)
             filename = (
+                f"t{timestamp_tag}_"
                 f"seg{frame_info['segment_index']:04d}_"
-                f"frame{frame_info['frame_in_segment']:05d}_"
-                f"t{timestamp_tag}.jpg"
+                f"frame{frame_info['frame_in_segment']:05d}.jpg"
             )
             dest_path = os.path.join(output_dir, filename)
             shutil.copy2(frame_info["temp_path"], dest_path)
