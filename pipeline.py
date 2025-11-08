@@ -494,10 +494,10 @@ if __name__ == "__main__":
     parser.add_argument("--temporal-weight", type=float, default=1.0, dest="temporal_weight")
     # parser.add_argument("--subtitle-json", type=str, default="./subtitles/f44gpGR4uWU_en.json", dest="subtitle_json")
     parser.add_argument("--subtitle-json", type=str, default="./subtitles/G1D9C7kRx10_en.json", dest="subtitle_json")
-    parser.add_argument("--attribute-top-k", type=int, default=3, dest="attribute_top_k")
+    parser.add_argument("--attribute-top-k", type=int, default=1, dest="attribute_top_k")
     parser.add_argument("--min-frames-per-clip", type=int, default=4, dest="min_frames_per_clip")
     parser.add_argument(
-        "--subtitle-neighbor-hops", type=int, default=2, dest="subtitle_neighbor_hops"
+        "--subtitle-neighbor-hops", type=int, default=3, dest="subtitle_neighbor_hops"
     )
 
     args = parser.parse_args()
