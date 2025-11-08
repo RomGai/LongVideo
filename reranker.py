@@ -206,7 +206,8 @@ def rerank_segments(
         results: List[Dict] = []
         for rank, frame_info in enumerate(selected_frames, start=1):
             filename = (
-                f"rank_{rank:03d}_seg{frame_info['segment_index']:04d}_"
+                #f"rank_{rank:03d}_seg{frame_info['segment_index']:04d}_"
+                f"seg{frame_info['segment_index']:04d}_"
                 f"frame{frame_info['frame_in_segment']:05d}.jpg"
             )
             dest_path = os.path.join(output_dir, filename)
