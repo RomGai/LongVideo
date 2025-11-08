@@ -150,6 +150,8 @@ def export_segments(
 
         out.release()
         print(f"🎬 Saved: {out_path}")
+        start_sec = float(start) / fps if fps else 0.0
+        end_sec = float(end) / fps if fps else start_sec
         segment_infos.append(
             {
                 "path": out_path,
@@ -157,6 +159,9 @@ def export_segments(
                 "end_frame": end,
                 "fps": fps,
                 "segment_index": seg_id,
+                "start_sec": start_sec,
+                "end_sec": end_sec,
+                "duration_sec": max(end_sec - start_sec, 0.0),
             }
         )
         seg_id += 1
