@@ -54,12 +54,14 @@ def _unload_model() -> None:
 
 
 INTENT_PROMPT = (
-    "You are helping with long-video retrieval. Analyze the user's query and decide "
-    "whether the search should activate extra subtitle-based retrieval and/or time-range "
-    "retrieval.\n"
+    "You are assisting with long-video retrieval. Analyze the user's query to determine "
+    "whether the system should activate additional subtitle-based retrieval and/or time-range retrieval.\n"
     "Return a strict JSON object with the following keys: 'subtitle_search' (true or false), "
-    "'time_search' (true or false), and 'reason' (a short sentence that justifies your decision).\n"
-    "Focus only on explicit or strongly implied cues in the query (for example, emphasizing the beginning, end, or a specific time segment of the video; or pointing out a particular subtitle).\n"
+    "'time_search' (true or false), and 'reason' (a brief sentence explaining your decision).\n"
+    "Focus only on explicit or strongly implied cues in the query.\n"
+    "For example, if the query mentions a specific time segment of the video (e.g., 'opening', 'beginning', 'end'), "
+    "enable time_search; otherwise, set it to false.\n"
+    "If the query refers to a particular subtitle or quoted line, enable subtitle_search; otherwise, set it to false.\n"
     "Query: {query}\n"
     "JSON:"
 )

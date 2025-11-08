@@ -478,10 +478,10 @@ def run_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the full long-video retrieval pipeline")
-    # parser.add_argument("--video", type=str, default="./videos/f44gpGR4uWU.mp4",help="Path to the input video")
-    parser.add_argument("--video", type=str, default="./videos/G1D9C7kRx10.mp4",help="Path to the input video")
-    # parser.add_argument("--query", type=str, default="Question: In the opening of the video, there's a man wearing a black top and a gray hat in the car. In which of the following scenes does he appear later? A. In the water. B. In the car, on the sofa. C. On the mountain. D. In the bathroom.",help="Text query for retrieval") #Answer with the option's letter from the given choices directly.
-    parser.add_argument("--query", type=str, default="Question: On a desk with a needle-shaped green leaf, there is a picture. A person is drawing with a pen. After the subtitle 'The snow fairy was hurt, and the next time she was sent to the mountains of ...', what does this person do?",help="Text query for retrieval") # A. Picks up the drawing with both hands. B. Picks up the rubber. C. Puts down the drawing. D. Pats the rabbit. Answer with the option's letter from the given choices directly.
+    parser.add_argument("--video", type=str, default="./videos/f44gpGR4uWU.mp4",help="Path to the input video")
+    #parser.add_argument("--video", type=str, default="./videos/G1D9C7kRx10.mp4",help="Path to the input video")
+    parser.add_argument("--query", type=str, default="Question: In the opening of the video, there's a man wearing a black top and a gray hat in the car. In which of the following scenes does he appear later? A. In the water. B. In the car, on the sofa. C. On the mountain. D. In the bathroom.",help="Text query for retrieval") #Answer with the option's letter from the given choices directly.
+    # parser.add_argument("--query", type=str, default="Question: On a desk with a needle-shaped green leaf, there is a picture. A person is drawing with a pen. After the subtitle 'The snow fairy was hurt, and the next time she was sent to the mountains of ...', what does this person do? A. Picks up the drawing with both hands. B. Picks up the rubber. C. Puts down the drawing. D. Pats the rabbit.",help="Text query for retrieval") # Answer with the option's letter from the given choices directly.
     parser.add_argument("--output", type=str, default="./output/",help="Directory to save the final ranked frames")
     parser.add_argument("--frame-interval", type=int, default=30, dest="frame_interval")
     parser.add_argument("--clusters", type=int, default=30, dest="n_clusters")
@@ -492,8 +492,8 @@ if __name__ == "__main__":
     parser.add_argument("--rerank-frame-interval", type=int, default=5, dest="rerank_frame_interval")
     parser.add_argument("--top-frames", type=int, default=128, dest="top_frames")
     parser.add_argument("--temporal-weight", type=float, default=1.0, dest="temporal_weight")
-    # parser.add_argument("--subtitle-json", type=str, default="./subtitles/f44gpGR4uWU_en.json", dest="subtitle_json")
-    parser.add_argument("--subtitle-json", type=str, default="./subtitles/G1D9C7kRx10_en.json", dest="subtitle_json")
+    parser.add_argument("--subtitle-json", type=str, default="./subtitles/f44gpGR4uWU_en.json", dest="subtitle_json")
+    #parser.add_argument("--subtitle-json", type=str, default="./subtitles/G1D9C7kRx10_en.json", dest="subtitle_json")
     parser.add_argument("--attribute-top-k", type=int, default=1, dest="attribute_top_k")
     parser.add_argument("--min-frames-per-clip", type=int, default=4, dest="min_frames_per_clip")
     parser.add_argument(
