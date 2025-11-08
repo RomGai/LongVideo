@@ -13,8 +13,13 @@ from chunk_embedding import compute_video_features
 from build_graph import build_spatiotemporal_graph
 from topk_graph_retrieval import retrieve_topk_segments
 from reranker import rerank_segments
-from query_intent import analyze_query_intent, rewrite_query_and_extract_subtitles
+from query_intent import (
+    analyze_query_intent,
+    analyze_time_focus,
+    rewrite_query_and_extract_subtitles,
+)
 from text_embedding import compute_similarities
+from time_utils import seconds_to_timestamp, timestamp_label, sortable_timestamp
 
 
 _NEAR_ZERO_DURATION = 1e-3
@@ -42,14 +47,6 @@ def _to_serializable(obj: Any) -> Any:
         return obj.detach().cpu().tolist()
 
     return obj
-
-
-def _seconds_to_timestamp(seconds: float) -> str:
-    seconds = max(float(seconds), 0.0)
-    minutes, secs = divmod(int(seconds), 60)
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-
 
 def _normalize_subtitle_time(value: Any) -> Optional[float]:
     if value is None:
@@ -149,8 +146,8 @@ def _time_attribute_text(attrs: Dict[str, Any]) -> str:
     end = attrs.get("end_sec")
     if start is None or end is None:
         return ""
-    timestamp_start = _seconds_to_timestamp(start)
-    timestamp_end = _seconds_to_timestamp(end)
+    timestamp_start = seconds_to_timestamp(start)
+    timestamp_end = seconds_to_timestamp(end)
     duration = max(float(end) - float(start), 0.0)
     return (
         f"Clip spanning {timestamp_start} to {timestamp_end} (duration {duration:.2f} seconds)."
@@ -255,24 +252,6 @@ def _merge_attribute_results(
                 info = attrs
             info["subtitle_similarity"] = float(sim)
 
-    if intent.get("time_search"):
-        time_hits = _retrieve_nodes_by_attribute(
-            graph, query, _time_attribute_text, attribute_top_k
-        )
-        print("------------subtitle_hits:")
-        print(time_hits)
-        for node_id, sim, _ in time_hits:
-            info = aggregated.get(node_id)
-            if info is None:
-                attrs = dict(graph.nodes[node_id])
-                attrs["node_id"] = node_id
-                attrs["similarity"] = 0.0
-                attrs["subtitle_similarity"] = 0.0
-                attrs["time_similarity"] = 0.0
-                aggregated[node_id] = attrs
-                info = attrs
-            info["time_similarity"] = float(sim)
-
     if intent.get("subtitle_search") and subtitle_neighbor_hops > 0:
         subtitle_hit_scores = {node_id: float(sim) for node_id, sim, _ in subtitle_hits}
         for node_id, sim in subtitle_hit_scores.items():
@@ -301,6 +280,62 @@ def _merge_attribute_results(
     return merged
 
 
+def _sparse_sample_time_range(
+    video_path: str,
+    start_sec: float,
+    end_sec: float,
+    frame_interval: int,
+    output_dir: str,
+    prefix: str,
+) -> List[Dict[str, Any]]:
+    import cv2
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    cap = cv2.VideoCapture(video_path)
+    fps = float(cap.get(cv2.CAP_PROP_FPS)) or 0.0
+    if fps <= 0.0:
+        fps = 30.0
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    start_frame = max(int(start_sec * fps), 0)
+    end_frame = min(int(end_sec * fps), total_frames - 1 if total_frames > 0 else start_frame)
+    if end_frame < start_frame:
+        end_frame = start_frame
+
+    frame_interval = max(int(frame_interval), 1)
+
+    sampled: List[Dict[str, Any]] = []
+    current = start_frame
+    while current <= end_frame:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, current)
+        success, frame = cap.read()
+        if not success:
+            break
+
+        timestamp = current / fps if fps else 0.0
+        sortable = sortable_timestamp(timestamp)
+        filename = f"{sortable}_{prefix}_t{timestamp_label(timestamp)}.jpg"
+        output_path = os.path.join(output_dir, filename)
+        cv2.imwrite(output_path, frame)
+
+        sampled.append(
+            {
+                "frame_index": current,
+                "timestamp": timestamp,
+                "output_path": output_path,
+                "timestamp_prefix": sortable,
+                "timestamp_label": timestamp_label(timestamp),
+            }
+        )
+
+        current += frame_interval
+
+    cap.release()
+    return sampled
+
+
 def run_pipeline(
     video_path: str,
     query: str,
@@ -318,8 +353,17 @@ def run_pipeline(
     attribute_top_k: int = 3,
     min_frames_per_clip: int = 6,
     subtitle_neighbor_hops: int = 2,
-) -> List[Dict]:
-    """执行完整的长视频检索与重排序流程。"""
+    time_focus_ratio: float = 0.05,
+    time_sampling_interval: int = 10,
+    time_range_padding: float = 1.0,
+    time_min_window: float = 2.0,
+) -> Dict[str, List[Dict]]:
+    """执行完整的长视频检索与重排序流程。
+
+    Returns:
+        dict: 包含 ``reranked_frames``（经过节点检索和重排的帧列表）以及
+        ``time_focus_frames``（基于时间范围稀疏采样得到的帧列表）的字典。
+    """
 
     temp_root = tempfile.mkdtemp(prefix="pipeline_tmp_")
     segments_dir = os.path.join(temp_root, "segments")
@@ -380,6 +424,8 @@ def run_pipeline(
         subtitle_query_text: Optional[str] = None
         cleaned_query = original_query or query
         subtitle_analysis: Optional[Dict[str, Any]] = None
+        time_focus_analysis: Optional[Dict[str, Any]] = None
+        time_focus_results: List[Dict[str, Any]] = []
 
         if intent.get("subtitle_search"):
             subtitle_analysis = rewrite_query_and_extract_subtitles(query)
@@ -409,6 +455,72 @@ def run_pipeline(
 
         print("----------query with no subtitles:")
         print(vision_query)
+
+        total_duration = max((info.get("end_sec") or 0.0) for info in segment_infos)
+
+        if intent.get("time_search"):
+            time_focus_analysis = analyze_time_focus(query)
+            print(
+                "Time focus analysis:",
+                json.dumps(
+                    {
+                        "mode": time_focus_analysis.get("mode"),
+                        "start_time_sec": time_focus_analysis.get("start_time_sec"),
+                        "end_time_sec": time_focus_analysis.get("end_time_sec"),
+                        "reason": time_focus_analysis.get("reason"),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+            mode = (time_focus_analysis.get("mode") or "none").lower()
+            start_sec = float(time_focus_analysis.get("start_time_sec") or 0.0)
+            end_sec = float(time_focus_analysis.get("end_time_sec") or 0.0)
+
+            clamped_ratio = max(min(float(time_focus_ratio), 1.0), 0.0)
+            if mode == "start":
+                end_sec = total_duration * clamped_ratio
+                start_sec = 0.0
+            elif mode == "end":
+                start_sec = max(total_duration * (1.0 - clamped_ratio), 0.0)
+                end_sec = total_duration
+            elif mode == "range":
+                start_sec = max(min(start_sec, total_duration), 0.0)
+                end_sec = max(min(end_sec, total_duration), 0.0)
+            else:
+                start_sec = 0.0
+                end_sec = 0.0
+
+            if end_sec < start_sec:
+                start_sec, end_sec = end_sec, start_sec
+
+            if end_sec - start_sec < max(float(time_min_window), 0.0):
+                mid = (start_sec + end_sec) / 2.0
+                padding = max(float(time_range_padding), 0.0)
+                half_window = max(float(time_min_window) / 2.0, padding)
+                start_sec = max(mid - half_window, 0.0)
+                end_sec = min(mid + half_window, total_duration)
+
+            if end_sec > start_sec:
+                time_output_dir = os.path.join(output_dir, "time_focus_frames")
+                mode_label = mode if mode in {"start", "end", "range"} else "custom"
+                prefix = f"time_{mode_label}"
+                time_focus_results = _sparse_sample_time_range(
+                    video_path,
+                    start_sec,
+                    end_sec,
+                    frame_interval=time_sampling_interval,
+                    output_dir=time_output_dir,
+                    prefix=prefix,
+                )
+
+                for item in time_focus_results:
+                    item["mode"] = mode_label
+                    item["start_sec"] = start_sec
+                    item["end_sec"] = end_sec
+                    timestamp = item.get("timestamp", 0.0)
+                    item["timestamp_label"] = timestamp_label(timestamp)
+                    item["timestamp_prefix"] = sortable_timestamp(timestamp)
 
         effective_top_k = top_k
         effective_spatial_k = spatial_k
@@ -452,6 +564,11 @@ def run_pipeline(
         with open(results_path, "w", encoding="utf-8") as f:
             json.dump(_to_serializable(final_frames), f, ensure_ascii=False, indent=2)
 
+        if time_focus_results:
+            time_results_path = os.path.join(output_dir, "time_focus_results.json")
+            with open(time_results_path, "w", encoding="utf-8") as f:
+                json.dump(_to_serializable(time_focus_results), f, ensure_ascii=False, indent=2)
+
         plan_path = os.path.join(output_dir, "retrieval_plan.json")
         with open(plan_path, "w", encoding="utf-8") as f:
             json.dump(
@@ -464,13 +581,21 @@ def run_pipeline(
                         "subtitle": subtitle_query_text or "",
                     },
                     "subtitle_analysis": subtitle_analysis,
+                    "time_focus_analysis": time_focus_analysis,
+                    "time_focus_range": {
+                        "start_sec": time_focus_results[0]["start_sec"] if time_focus_results else 0.0,
+                        "end_sec": time_focus_results[0]["end_sec"] if time_focus_results else 0.0,
+                    },
                 },
                 f,
                 ensure_ascii=False,
                 indent=2,
             )
 
-        return final_frames
+        return {
+            "reranked_frames": final_frames,
+            "time_focus_frames": time_focus_results,
+        }
 
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
@@ -499,6 +624,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--subtitle-neighbor-hops", type=int, default=3, dest="subtitle_neighbor_hops"
     )
+    parser.add_argument(
+        "--time-focus-ratio", type=float, default=0.05, dest="time_focus_ratio"
+    )
+    parser.add_argument(
+        "--time-sampling-interval", type=int, default=10, dest="time_sampling_interval"
+    )
+    parser.add_argument(
+        "--time-range-padding", type=float, default=1.0, dest="time_range_padding"
+    )
+    parser.add_argument(
+        "--time-min-window", type=float, default=2.0, dest="time_min_window"
+    )
 
     args = parser.parse_args()
 
@@ -520,6 +657,10 @@ if __name__ == "__main__":
         attribute_top_k=args.attribute_top_k,
         min_frames_per_clip=args.min_frames_per_clip,
         subtitle_neighbor_hops=args.subtitle_neighbor_hops,
+        time_focus_ratio=args.time_focus_ratio,
+        time_sampling_interval=args.time_sampling_interval,
+        time_range_padding=args.time_range_padding,
+        time_min_window=args.time_min_window,
     )
 
     print(json.dumps(results, ensure_ascii=False, indent=2))

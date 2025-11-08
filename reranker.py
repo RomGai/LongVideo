@@ -8,6 +8,7 @@ import tempfile
 from collections import defaultdict
 from typing import List, Dict, Iterable
 from peft import PeftModel
+from time_utils import timestamp_label, sortable_timestamp
 
 adapter_dir = "./result"  # 👈 替换为你训练保存LoRA的目录
 
@@ -205,10 +206,14 @@ def rerank_segments(
 
         results: List[Dict] = []
         for rank, frame_info in enumerate(selected_frames, start=1):
+            timestamp = float(frame_info.get("timestamp") or 0.0)
+            timestamp_tag = timestamp_label(timestamp)
+            sortable = sortable_timestamp(timestamp)
             filename = (
-                #f"rank_{rank:03d}_seg{frame_info['segment_index']:04d}_"
+                f"{sortable}_"
                 f"seg{frame_info['segment_index']:04d}_"
-                f"frame{frame_info['frame_in_segment']:05d}.jpg"
+                f"frame{frame_info['frame_in_segment']:05d}_"
+                f"t{timestamp_tag}.jpg"
             )
             dest_path = os.path.join(output_dir, filename)
             shutil.copy2(frame_info["temp_path"], dest_path)
@@ -216,6 +221,8 @@ def rerank_segments(
             enriched = dict(frame_info)
             enriched["rank"] = rank
             enriched["output_path"] = dest_path
+            enriched["timestamp_label"] = timestamp_tag
+            enriched["timestamp_prefix"] = sortable
             results.append(enriched)
 
         return results
