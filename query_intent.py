@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
@@ -28,6 +28,43 @@ INTENT_PROMPT = (
     "Query: {query}\n"
     "JSON:"
 )
+
+SUBTITLE_REWRITE_PROMPT = (
+    "You assist with long-video question answering. The user query may contain quoted "
+    "or paraphrased subtitles mixed with other instructions. Extract only the subtitle "
+    "lines that should be matched against a subtitle index, and rewrite the query so "
+    "that it no longer contains any literal subtitle text while keeping all other "
+    "statements and the final question.\n"
+    "Return a strict JSON object with keys: 'subtitle_text' (a single string with the "
+    "subtitle lines separated by spaces, or an empty string if none), 'cleaned_query' "
+    "(the query rewritten without subtitle text but preserving the rest), and 'reason' "
+    "(briefly explain your extraction).\n"
+    "Query: {query}\n"
+    "JSON:"
+)
+
+
+def _generate_response(messages: List[Dict[str, Any]], max_new_tokens: int = 256) -> str:
+    chat_text = _processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+
+    inputs = _processor(text=[chat_text], return_tensors="pt").to(_intent_model.device)
+    with torch.no_grad():
+        generated = _intent_model.generate(**inputs, max_new_tokens=max_new_tokens)
+
+    new_tokens = generated[:, inputs["input_ids"].shape[-1] :]
+    return _processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
+
+
+def _extract_json_object(response: str) -> Dict[str, Any]:
+    json_match = re.search(r"\{.*\}", response, re.DOTALL)
+    if not json_match:
+        return {}
+    try:
+        return json.loads(json_match.group())
+    except json.JSONDecodeError:
+        return {}
 
 
 def _to_bool(value: Any) -> bool:
@@ -53,27 +90,8 @@ def analyze_query_intent(query: str) -> Dict[str, Any]:
         {"role": "user", "content": formatted_prompt},
     ]
 
-    chat_text = _processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
-
-    inputs = _processor(text=[chat_text], return_tensors="pt").to(_intent_model.device)
-    with torch.no_grad():
-        generated = _intent_model.generate(**inputs, max_new_tokens=256)
-
-    # Only keep newly generated tokens (excluding the prompt part)
-    new_tokens = generated[:, inputs["input_ids"].shape[-1] :]
-    response = _processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
-
-    json_match = re.search(r"\{.*\}", response, re.DOTALL)
-    payload: Dict[str, Any]
-    if json_match:
-        try:
-            payload = json.loads(json_match.group())
-        except json.JSONDecodeError:
-            payload = {}
-    else:
-        payload = {}
+    response = _generate_response(messages)
+    payload = _extract_json_object(response)
 
     subtitle_needed = _to_bool(payload.get("subtitle_search"))
     time_needed = _to_bool(payload.get("time_search"))
@@ -82,6 +100,43 @@ def analyze_query_intent(query: str) -> Dict[str, Any]:
     return {
         "subtitle_search": subtitle_needed,
         "time_search": time_needed,
+        "reason": reason,
+        "raw_response": response.strip(),
+    }
+
+
+def rewrite_query_and_extract_subtitles(query: str) -> Dict[str, Any]:
+    """Use the VL model to split subtitle text from the rest of the query."""
+
+    formatted_prompt = SUBTITLE_REWRITE_PROMPT.format(query=query.strip())
+    messages = [
+        {
+            "role": "system",
+            "content": "You extract subtitle text and rewrite queries for video retrieval.",
+        },
+        {"role": "user", "content": formatted_prompt},
+    ]
+
+    response = _generate_response(messages, max_new_tokens=384)
+    payload = _extract_json_object(response)
+
+    subtitle_text = payload.get("subtitle_text")
+    if isinstance(subtitle_text, str):
+        subtitle_text = subtitle_text.strip()
+    else:
+        subtitle_text = ""
+
+    cleaned_query = payload.get("cleaned_query")
+    if isinstance(cleaned_query, str):
+        cleaned_query = cleaned_query.strip()
+    else:
+        cleaned_query = ""
+
+    reason = payload.get("reason") if isinstance(payload.get("reason"), str) else ""
+
+    return {
+        "subtitle_text": subtitle_text,
+        "cleaned_query": cleaned_query,
         "reason": reason,
         "raw_response": response.strip(),
     }

@@ -13,7 +13,7 @@ from chunk_embedding import compute_video_features
 from build_graph import build_spatiotemporal_graph
 from topk_graph_retrieval import retrieve_topk_segments
 from reranker import rerank_segments
-from query_intent import analyze_query_intent
+from query_intent import analyze_query_intent, rewrite_query_and_extract_subtitles
 from text_embedding import compute_similarities
 
 
@@ -199,6 +199,7 @@ def _merge_attribute_results(
     intent: Dict[str, Any],
     query: str,
     attribute_top_k: int,
+    subtitle_query: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     aggregated = {info["node_id"]: dict(info) for info in base_segments if "node_id" in info}
 
@@ -207,8 +208,9 @@ def _merge_attribute_results(
         info.setdefault("time_similarity", 0.0)
 
     if intent.get("subtitle_search"):
+        subtitle_query_text = subtitle_query if subtitle_query else query
         subtitle_hits = _retrieve_nodes_by_attribute(
-            graph, query, _subtitle_attribute_text, attribute_top_k
+            graph, subtitle_query_text, _subtitle_attribute_text, attribute_top_k
         )
         print("------------subtitle_hits:")
         print(subtitle_hits)
@@ -314,16 +316,7 @@ def run_pipeline(
         segment_features = compute_video_features(segment_infos, frame_interval=embedding_frame_interval)
         graph = build_spatiotemporal_graph(segment_features, temporal_weight=temporal_weight)
 
-        selected_segments = retrieve_topk_segments(
-            graph,
-            query,
-            top_k=top_k,
-            spatial_k=spatial_k,
-        )
-
-        if not selected_segments:
-            raise RuntimeError("No segments were selected from the retrieval stage.")
-
+        original_query = query.strip()
         intent = analyze_query_intent(query)
         print(
             "Query intent:",
@@ -334,12 +327,51 @@ def run_pipeline(
             }, ensure_ascii=False),
         )
 
+        subtitle_query_text: Optional[str] = None
+        cleaned_query = original_query or query
+        subtitle_analysis: Optional[Dict[str, Any]] = None
+
+        if intent.get("subtitle_search"):
+            subtitle_analysis = rewrite_query_and_extract_subtitles(query)
+            extracted_subtitle = subtitle_analysis.get("subtitle_text") if subtitle_analysis else ""
+            if extracted_subtitle:
+                subtitle_query_text = extracted_subtitle
+
+            cleaned_candidate = subtitle_analysis.get("cleaned_query") if subtitle_analysis else ""
+            if cleaned_candidate:
+                cleaned_query = cleaned_candidate
+
+            print(
+                "Subtitle rewrite:",
+                json.dumps(
+                    {
+                        "subtitle_text": subtitle_query_text or "",
+                        "cleaned_query": cleaned_query,
+                        "reason": subtitle_analysis.get("reason") if subtitle_analysis else "",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+        vision_query = cleaned_query.strip() or original_query or query
+
+        selected_segments = retrieve_topk_segments(
+            graph,
+            vision_query,
+            top_k=top_k,
+            spatial_k=spatial_k,
+        )
+
+        if not selected_segments:
+            raise RuntimeError("No segments were selected from the retrieval stage.")
+
         merged_segments = _merge_attribute_results(
             graph,
             selected_segments,
             intent=intent,
-            query=query,
+            query=vision_query,
             attribute_top_k=attribute_top_k,
+            subtitle_query=subtitle_query_text,
         )
 
         max_segments = max(top_k + attribute_top_k, len(selected_segments))
@@ -347,7 +379,7 @@ def run_pipeline(
 
         final_frames = rerank_segments(
             selected_segments,
-            query=query,
+            query=vision_query,
             frame_interval=rerank_frame_interval,
             top_frames=top_frames,
             output_dir=output_dir,
@@ -364,6 +396,12 @@ def run_pipeline(
                 {
                     "intent": intent,
                     "selected_segments": _to_serializable(selected_segments),
+                    "query_variants": {
+                        "original": query,
+                        "vision": vision_query,
+                        "subtitle": subtitle_query_text or "",
+                    },
+                    "subtitle_analysis": subtitle_analysis,
                 },
                 f,
                 ensure_ascii=False,
