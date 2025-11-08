@@ -193,6 +193,33 @@ def _combine_segment_scores(info: Dict[str, Any]) -> float:
     info["combined_score"] = combined
     return combined
 
+def _collect_temporal_neighbors(graph, node_id: int, hops: int) -> List[int]:
+    if hops <= 0:
+        return []
+
+    visited = {node_id}
+    frontier = {node_id}
+    collected = set()
+
+    for _ in range(hops):
+        next_frontier = set()
+        for current in frontier:
+            for neighbor in graph.neighbors(current):
+                edge = graph.edges[current, neighbor]
+                if edge.get("type") != "temporal":
+                    continue
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                collected.add(neighbor)
+                next_frontier.add(neighbor)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+
+    return list(collected)
+
+
 def _merge_attribute_results(
     graph,
     base_segments: Iterable[Dict[str, Any]],
@@ -200,6 +227,7 @@ def _merge_attribute_results(
     query: str,
     attribute_top_k: int,
     subtitle_query: Optional[str] = None,
+    subtitle_neighbor_hops: int = 0,
 ) -> List[Dict[str, Any]]:
     aggregated = {info["node_id"]: dict(info) for info in base_segments if "node_id" in info}
 
@@ -207,6 +235,7 @@ def _merge_attribute_results(
         info.setdefault("subtitle_similarity", 0.0)
         info.setdefault("time_similarity", 0.0)
 
+    subtitle_hits: List[Tuple[int, float, str]] = []
     if intent.get("subtitle_search"):
         subtitle_query_text = subtitle_query if subtitle_query else query
         subtitle_hits = _retrieve_nodes_by_attribute(
@@ -244,6 +273,26 @@ def _merge_attribute_results(
                 info = attrs
             info["time_similarity"] = float(sim)
 
+    if intent.get("subtitle_search") and subtitle_neighbor_hops > 0:
+        subtitle_hit_scores = {node_id: float(sim) for node_id, sim, _ in subtitle_hits}
+        for node_id, sim in subtitle_hit_scores.items():
+            temporal_neighbors = _collect_temporal_neighbors(
+                graph, node_id, subtitle_neighbor_hops
+            )
+            for neighbor_id in temporal_neighbors:
+                info = aggregated.get(neighbor_id)
+                if info is None:
+                    attrs = dict(graph.nodes[neighbor_id])
+                    attrs["node_id"] = neighbor_id
+                    attrs["similarity"] = 0.0
+                    attrs["subtitle_similarity"] = 0.0
+                    attrs["time_similarity"] = 0.0
+                    aggregated[neighbor_id] = attrs
+                    info = attrs
+                current = float(info.get("subtitle_similarity") or 0.0)
+                if sim > current:
+                    info["subtitle_similarity"] = sim
+
     merged = list(aggregated.values())
     for info in merged:
         _combine_segment_scores(info)
@@ -268,6 +317,7 @@ def run_pipeline(
     subtitle_json: Optional[str] = None,
     attribute_top_k: int = 3,
     min_frames_per_clip: int = 6,
+    subtitle_neighbor_hops: int = 2,
 ) -> List[Dict]:
     """执行完整的长视频检索与重排序流程。"""
 
@@ -360,11 +410,17 @@ def run_pipeline(
         print("----------query with no subtitles:")
         print(vision_query)
 
+        effective_top_k = top_k
+        effective_spatial_k = spatial_k
+        if intent.get("subtitle_search"):
+            effective_top_k = 1
+            effective_spatial_k = 1
+
         selected_segments = retrieve_topk_segments(
             graph,
             vision_query,
-            top_k=top_k,
-            spatial_k=spatial_k,
+            top_k=effective_top_k,
+            spatial_k=effective_spatial_k,
         )
 
         if not selected_segments:
@@ -377,6 +433,7 @@ def run_pipeline(
             query=vision_query,
             attribute_top_k=attribute_top_k,
             subtitle_query=subtitle_query_text,
+            subtitle_neighbor_hops=subtitle_neighbor_hops,
         )
 
         max_segments = max(top_k + attribute_top_k, len(selected_segments))
@@ -430,8 +487,8 @@ if __name__ == "__main__":
     parser.add_argument("--clusters", type=int, default=30, dest="n_clusters")
     parser.add_argument("--min-segment-sec", type=float, default=1, dest="min_segment_sec")
     parser.add_argument("--embed-frame-interval", type=int, default=10, dest="embedding_frame_interval")
-    parser.add_argument("--top-k", type=int, default=3, dest="top_k")
-    parser.add_argument("--spatial-k", type=int, default=3, dest="spatial_k")
+    parser.add_argument("--top-k", type=int, default=1, dest="top_k")
+    parser.add_argument("--spatial-k", type=int, default=1, dest="spatial_k")
     parser.add_argument("--rerank-frame-interval", type=int, default=5, dest="rerank_frame_interval")
     parser.add_argument("--top-frames", type=int, default=256, dest="top_frames")
     parser.add_argument("--temporal-weight", type=float, default=1.0, dest="temporal_weight")
@@ -439,6 +496,9 @@ if __name__ == "__main__":
     parser.add_argument("--subtitle-json", type=str, default="./subtitles/G1D9C7kRx10_en.json", dest="subtitle_json")
     parser.add_argument("--attribute-top-k", type=int, default=3, dest="attribute_top_k")
     parser.add_argument("--min-frames-per-clip", type=int, default=4, dest="min_frames_per_clip")
+    parser.add_argument(
+        "--subtitle-neighbor-hops", type=int, default=2, dest="subtitle_neighbor_hops"
+    )
 
     args = parser.parse_args()
 
@@ -459,6 +519,7 @@ if __name__ == "__main__":
         subtitle_json=args.subtitle_json,
         attribute_top_k=args.attribute_top_k,
         min_frames_per_clip=args.min_frames_per_clip,
+        subtitle_neighbor_hops=args.subtitle_neighbor_hops,
     )
 
     print(json.dumps(results, ensure_ascii=False, indent=2))
