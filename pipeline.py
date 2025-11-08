@@ -227,7 +227,7 @@ def _merge_attribute_results(
     query: str,
     attribute_top_k: int,
     subtitle_query: Optional[str] = None,
-    subtitle_neighbor_hops: int = 0,
+    subtitle_neighbor_hops: int = 3,
 ) -> List[Dict[str, Any]]:
     aggregated = {info["node_id"]: dict(info) for info in base_segments if "node_id" in info}
 
@@ -490,7 +490,7 @@ if __name__ == "__main__":
     parser.add_argument("--top-k", type=int, default=1, dest="top_k")
     parser.add_argument("--spatial-k", type=int, default=1, dest="spatial_k")
     parser.add_argument("--rerank-frame-interval", type=int, default=5, dest="rerank_frame_interval")
-    parser.add_argument("--top-frames", type=int, default=256, dest="top_frames")
+    parser.add_argument("--top-frames", type=int, default=128, dest="top_frames")
     parser.add_argument("--temporal-weight", type=float, default=1.0, dest="temporal_weight")
     # parser.add_argument("--subtitle-json", type=str, default="./subtitles/f44gpGR4uWU_en.json", dest="subtitle_json")
     parser.add_argument("--subtitle-json", type=str, default="./subtitles/G1D9C7kRx10_en.json", dest="subtitle_json")
