@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import re
 from typing import Any, Dict, List
@@ -11,11 +12,45 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 _MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 
-_processor = AutoProcessor.from_pretrained(_MODEL_ID)
-_intent_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    _MODEL_ID, torch_dtype=torch_dtype=torch.float16, device_map="auto"
-)
-_intent_model.eval()
+_processor: AutoProcessor | None = None
+_intent_model: Qwen2_5_VLForConditionalGeneration | None = None
+
+
+def _load_model() -> tuple[AutoProcessor, Qwen2_5_VLForConditionalGeneration]:
+    global _processor, _intent_model
+
+    if _processor is None or _intent_model is None:
+        _processor = AutoProcessor.from_pretrained(_MODEL_ID)
+        _intent_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            _MODEL_ID, torch_dtype=torch.float16, device_map="auto"
+        )
+        _intent_model.eval()
+
+    return _processor, _intent_model
+
+
+def _unload_model() -> None:
+    """Release cached processor/model references and clear GPU memory."""
+
+    global _processor, _intent_model
+
+    if _processor is None and _intent_model is None:
+        return
+
+    model = _intent_model
+    processor = _processor
+
+    _intent_model = None
+    _processor = None
+
+    # Drop references before forcing garbage collection / cache cleanup.
+    del processor
+    if model is not None:
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    gc.collect()
 
 
 INTENT_PROMPT = (
@@ -33,7 +68,7 @@ SUBTITLE_REWRITE_PROMPT = (
     "You assist with long-video question answering. The user query may contain quoted "
     "or paraphrased subtitles mixed with other instructions. Extract only the subtitle "
     "text that should be matched against a subtitle index, and rewrite the query so "
-    "that it no longer contains any literal subtitle-related text (for example: "After the subtitle '......'"; "When the phrase '.....'") while keeping all other "
+    "that it no longer contains any literal subtitle-related text (for example: \"After the subtitle '......'\"; \"When the phrase '.....'\") while keeping all other "
     "statements and the final question.\n"
     "Return a strict JSON object with keys: 'subtitle_text' (a single string with the "
     "subtitle text separated by spaces, or an empty string if none), 'cleaned_query' "
@@ -44,17 +79,31 @@ SUBTITLE_REWRITE_PROMPT = (
 )
 
 
-def _generate_response(messages: List[Dict[str, Any]], max_new_tokens: int = 256) -> str:
-    chat_text = _processor.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
+def _generate_response(
+    messages: List[Dict[str, Any]],
+    max_new_tokens: int = 256,
+    unload_after_use: bool = True,
+) -> str:
+    processor, intent_model = _load_model()
 
-    inputs = _processor(text=[chat_text], return_tensors="pt").to(_intent_model.device)
-    with torch.no_grad():
-        generated = _intent_model.generate(**inputs, max_new_tokens=max_new_tokens)
+    try:
+        chat_text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
 
-    new_tokens = generated[:, inputs["input_ids"].shape[-1] :]
-    return _processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
+        inputs = processor(text=[chat_text], return_tensors="pt").to(
+            intent_model.device
+        )
+        with torch.no_grad():
+            generated = intent_model.generate(**inputs, max_new_tokens=max_new_tokens)
+
+        new_tokens = generated[:, inputs["input_ids"].shape[-1] :]
+        return processor.batch_decode(new_tokens, skip_special_tokens=True)[0]
+    finally:
+        if unload_after_use:
+            intent_model = None
+            processor = None
+            _unload_model()
 
 
 def _extract_json_object(response: str) -> Dict[str, Any]:
@@ -81,8 +130,15 @@ def _to_bool(value: Any) -> bool:
     return False
 
 
-def analyze_query_intent(query: str) -> Dict[str, Any]:
-    """Infer whether subtitle or temporal retrieval is required for a query."""
+def analyze_query_intent(query: str, *, keep_model_loaded: bool = False) -> Dict[str, Any]:
+    """Infer whether subtitle or temporal retrieval is required for a query.
+
+    Args:
+        query: Natural-language query to inspect.
+        keep_model_loaded: Leave the underlying model cached after the call for
+            subsequent invocations. Defaults to ``False`` to minimize GPU memory
+            usage.
+    """
 
     formatted_prompt = INTENT_PROMPT.format(query=query.strip())
     messages = [
@@ -90,7 +146,9 @@ def analyze_query_intent(query: str) -> Dict[str, Any]:
         {"role": "user", "content": formatted_prompt},
     ]
 
-    response = _generate_response(messages)
+    response = _generate_response(
+        messages, unload_after_use=not keep_model_loaded
+    )
     payload = _extract_json_object(response)
 
     subtitle_needed = _to_bool(payload.get("subtitle_search"))
@@ -105,8 +163,16 @@ def analyze_query_intent(query: str) -> Dict[str, Any]:
     }
 
 
-def rewrite_query_and_extract_subtitles(query: str) -> Dict[str, Any]:
-    """Use the VL model to split subtitle text from the rest of the query."""
+def rewrite_query_and_extract_subtitles(
+    query: str, *, keep_model_loaded: bool = False
+) -> Dict[str, Any]:
+    """Use the VL model to split subtitle text from the rest of the query.
+
+    Args:
+        query: User question potentially containing subtitle snippets.
+        keep_model_loaded: Leave the model cached after the call for reuse.
+            Defaults to ``False`` so the model is unloaded to free GPU memory.
+    """
 
     formatted_prompt = SUBTITLE_REWRITE_PROMPT.format(query=query.strip())
     messages = [
@@ -117,7 +183,11 @@ def rewrite_query_and_extract_subtitles(query: str) -> Dict[str, Any]:
         {"role": "user", "content": formatted_prompt},
     ]
 
-    response = _generate_response(messages, max_new_tokens=384)
+    response = _generate_response(
+        messages,
+        max_new_tokens=384,
+        unload_after_use=not keep_model_loaded,
+    )
     payload = _extract_json_object(response)
 
     subtitle_text = payload.get("subtitle_text")
@@ -140,4 +210,10 @@ def rewrite_query_and_extract_subtitles(query: str) -> Dict[str, Any]:
         "reason": reason,
         "raw_response": response.strip(),
     }
+
+
+def unload_intent_model() -> None:
+    """Manually clear any cached model to release GPU memory."""
+
+    _unload_model()
 
