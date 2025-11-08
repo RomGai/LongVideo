@@ -334,6 +334,8 @@ def run_pipeline(
         if intent.get("subtitle_search"):
             subtitle_analysis = rewrite_query_and_extract_subtitles(query)
             extracted_subtitle = subtitle_analysis.get("subtitle_text") if subtitle_analysis else ""
+            print("----------extracted_subtitles:")
+            print(extracted_subtitle)
             if extracted_subtitle:
                 subtitle_query_text = extracted_subtitle
 
@@ -354,6 +356,9 @@ def run_pipeline(
             )
 
         vision_query = cleaned_query.strip() or original_query or query
+
+        print("----------query with no subtitles:")
+        print(vision_query)
 
         selected_segments = retrieve_topk_segments(
             graph,
