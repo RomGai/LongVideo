@@ -80,6 +80,21 @@ SUBTITLE_REWRITE_PROMPT = (
     "JSON:"
 )
 
+TIME_FOCUS_PROMPT = (
+    "You help a video-retrieval pipeline understand time-oriented requests.\n"
+    "Given the query, decide whether it refers to the beginning, the ending, or a specific time span of the video.\n"
+    "Return a JSON object with keys: 'mode', 'start_time_sec', 'end_time_sec', and 'reason'.\n"
+    "'mode' must be one of: 'start', 'end', 'range', or 'none'.\n"
+    "For queries about the start/opening/first moments, return mode 'start'.\n"
+    "For queries about the end/closing/final moments, return mode 'end'.\n"
+    "If the query specifies concrete timestamps (e.g., 'at 1:23', 'between 00:30 and 01:10'), return mode 'range' and fill "
+    "'start_time_sec' and 'end_time_sec' with the interpreted seconds (use the same value for both if only one point is given).\n"
+    "If no clear temporal focus exists, return mode 'none'.\n"
+    "Always include 'reason' explaining the interpretation.\n"
+    "Query: {query}\n"
+    "JSON:"
+)
+
 
 def _generate_response(
     messages: List[Dict[str, Any]],
@@ -209,6 +224,55 @@ def rewrite_query_and_extract_subtitles(
     return {
         "subtitle_text": subtitle_text,
         "cleaned_query": cleaned_query,
+        "reason": reason,
+        "raw_response": response.strip(),
+    }
+
+
+def _to_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def analyze_time_focus(query: str, *, keep_model_loaded: bool = False) -> Dict[str, Any]:
+    """Use the VL model to categorize the temporal focus of a query."""
+
+    formatted_prompt = TIME_FOCUS_PROMPT.format(query=query.strip())
+    messages = [
+        {
+            "role": "system",
+            "content": "You interpret temporal hints in video-retrieval queries.",
+        },
+        {"role": "user", "content": formatted_prompt},
+    ]
+
+    response = _generate_response(
+        messages,
+        max_new_tokens=256,
+        unload_after_use=not keep_model_loaded,
+    )
+    payload = _extract_json_object(response)
+
+    mode = payload.get("mode")
+    if isinstance(mode, str):
+        mode = mode.strip().lower()
+    else:
+        mode = "none"
+
+    start_time_sec = _to_float(payload.get("start_time_sec"))
+    end_time_sec = _to_float(payload.get("end_time_sec"))
+    reason = payload.get("reason") if isinstance(payload.get("reason"), str) else ""
+
+    return {
+        "mode": mode,
+        "start_time_sec": start_time_sec,
+        "end_time_sec": end_time_sec,
         "reason": reason,
         "raw_response": response.strip(),
     }
