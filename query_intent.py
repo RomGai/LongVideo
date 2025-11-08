@@ -9,11 +9,11 @@ from typing import Any, Dict, List
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
-_MODEL_ID = "Qwen/Qwen2.5-VL-3B-Instruct"
+_MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 
 _processor = AutoProcessor.from_pretrained(_MODEL_ID)
 _intent_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-    _MODEL_ID, torch_dtype="auto", device_map="auto"
+    _MODEL_ID, torch_dtype=torch_dtype=torch.float16, device_map="auto"
 )
 _intent_model.eval()
 
@@ -37,7 +37,7 @@ SUBTITLE_REWRITE_PROMPT = (
     "statements and the final question.\n"
     "Return a strict JSON object with keys: 'subtitle_text' (a single string with the "
     "subtitle lines separated by spaces, or an empty string if none), 'cleaned_query' "
-    "(the query rewritten without subtitle text but preserving the rest), and 'reason' "
+    "(the query rewritten without subtitle-related text but preserving the rest), and 'reason' "
     "(briefly explain your extraction).\n"
     "Query: {query}\n"
     "JSON:"
