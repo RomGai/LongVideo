@@ -24,7 +24,7 @@ INTENT_PROMPT = (
     "retrieval.\n"
     "Return a strict JSON object with the following keys: 'subtitle_search' (true or false), "
     "'time_search' (true or false), and 'reason' (a short sentence that justifies your decision).\n"
-    "Focus only on explicit or strongly implied cues in the query.\n"
+    "Focus only on explicit or strongly implied cues in the query (for example, emphasizing the beginning, end, or a specific time segment of the video; or pointing out a particular subtitle).\n"
     "Query: {query}\n"
     "JSON:"
 )
@@ -59,7 +59,7 @@ def analyze_query_intent(query: str) -> Dict[str, Any]:
 
     inputs = _processor(text=[chat_text], return_tensors="pt").to(_intent_model.device)
     with torch.no_grad():
-        generated = _intent_model.generate(**inputs, max_new_tokens=128)
+        generated = _intent_model.generate(**inputs, max_new_tokens=256)
 
     # Only keep newly generated tokens (excluding the prompt part)
     new_tokens = generated[:, inputs["input_ids"].shape[-1] :]
