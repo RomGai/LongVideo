@@ -315,7 +315,7 @@ def _sparse_sample_time_range(
             break
 
         timestamp = current / fps if fps else 0.0
-        filename = f"{prefix}_t{timestamp_label(timestamp)}.jpg"
+        filename = f"t{timestamp_label(timestamp)}_{prefix}.jpg"
         output_path = os.path.join(output_dir, filename)
         cv2.imwrite(output_path, frame)
 
