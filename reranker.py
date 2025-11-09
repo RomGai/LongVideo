@@ -6,7 +6,7 @@ import os
 import shutil
 import tempfile
 from collections import defaultdict
-from typing import List, Dict, Iterable
+from typing import List, Dict, Iterable, Optional
 from peft import PeftModel
 from time_utils import timestamp_label
 
@@ -77,11 +77,15 @@ def _score_segment_frames(
     query: str,
     frame_interval: int,
     temp_dir: str,
+    *,
+    target_sample_fps: Optional[float] = None,
 ) -> List[Dict]:
     os.makedirs(temp_dir, exist_ok=True)
     video_path = segment_info["path"]
     cap = cv2.VideoCapture(video_path)
-    fps = int(cap.get(cv2.CAP_PROP_FPS)) or int(segment_info.get("fps", 0) or 0) or 1
+    fps = float(cap.get(cv2.CAP_PROP_FPS)) or float(segment_info.get("fps", 0) or 0.0)
+    if fps <= 0.0:
+        fps = 1.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     print(f"Video loaded: {video_path} | {total_frames} frames at {fps} FPS")
 
@@ -89,8 +93,12 @@ def _score_segment_frames(
 
     idx = 0
     success, frame = cap.read()
+    effective_interval = max(int(frame_interval), 1)
+    if target_sample_fps and target_sample_fps > 0.0 and fps > 0.0:
+        computed = int(round(fps / float(target_sample_fps)))
+        effective_interval = max(computed, 1)
     while success:
-        if idx % frame_interval == 0:
+        if idx % effective_interval == 0:
             segment_index = segment_info.get("segment_index")
             if segment_index is not None:
                 segment_index = int(segment_index)
@@ -149,6 +157,8 @@ def rerank_segments(
     top_frames: int = 128,
     output_dir: str = "reranker_output",
     min_frames_per_clip: int = 6,
+    *,
+    target_sample_fps: Optional[float] = None,
 ) -> List[Dict]:
     """对检索到的片段进行帧级重排序，并导出最相关的帧。
 
@@ -162,7 +172,13 @@ def rerank_segments(
         all_frames: List[Dict] = []
         for info in segment_infos:
             all_frames.extend(
-                _score_segment_frames(info, query=query, frame_interval=frame_interval, temp_dir=temp_dir)
+                _score_segment_frames(
+                    info,
+                    query=query,
+                    frame_interval=frame_interval,
+                    temp_dir=temp_dir,
+                    target_sample_fps=target_sample_fps,
+                )
             )
 
         if not all_frames:
