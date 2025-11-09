@@ -90,6 +90,27 @@ def _resolve_path(base_dir: Optional[str], candidate: Optional[str]) -> Optional
     return os.path.abspath(os.path.join(base_dir, candidate))
 
 
+def _probe_video_metadata(video_path: str) -> Dict[str, float]:
+    import cv2
+
+    metadata = {"fps": 0.0, "total_frames": 0.0, "duration": 0.0}
+    if not video_path:
+        return metadata
+
+    cap = cv2.VideoCapture(video_path)
+    try:
+        if not cap.isOpened():
+            return metadata
+
+        fps = float(cap.get(cv2.CAP_PROP_FPS)) or 0.0
+        total_frames = float(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0.0
+        duration = total_frames / fps if fps > 0.0 else 0.0
+        metadata.update({"fps": fps, "total_frames": total_frames, "duration": duration})
+        return metadata
+    finally:
+        cap.release()
+
+
 def _load_subtitle_entries(path: Optional[str]) -> List[Dict[str, Any]]:
     if not path:
         return []
@@ -466,8 +487,12 @@ def run_pipeline(
     time_sampling_interval: int = 10,
     time_range_padding: float = 1.0,
     time_min_window: float = 2.0,
+    short_video_threshold: float = 240.0,
 ) -> Dict[str, List[Dict]]:
     """执行完整的长视频检索与重排序流程。
+
+    当视频时长低于 ``short_video_threshold`` 时，会自动跳过视觉语义检索，
+    直接以 1 FPS 采样整段视频并调用重排模块进行排序。
 
     Returns:
         dict: 包含 ``reranked_frames``（经过节点检索和重排的帧列表）以及
@@ -488,36 +513,76 @@ def run_pipeline(
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        embeddings, frames = extract_visual_embeddings(video_path, frame_interval=frame_interval)
-        change_points, _ = cluster_and_segment(
-            video_path,
-            embeddings,
-            frames,
-            method="kmeans",
-            n_clusters=n_clusters,
+        video_metadata = _probe_video_metadata(video_path)
+        video_fps = float(video_metadata.get("fps", 0.0) or 0.0)
+        video_total_frames = float(video_metadata.get("total_frames", 0.0) or 0.0)
+        approx_duration = float(video_metadata.get("duration", 0.0) or 0.0)
+        short_video_mode = (
+            short_video_threshold > 0.0
+            and approx_duration > 0.0
+            and approx_duration <= short_video_threshold
         )
 
-        segment_infos = export_segments(
-            video_path,
-            change_points,
-            output_dir=segments_dir,
-            min_segment_sec=min_segment_sec,
-        )
-
-        if not segment_infos:
-            raise RuntimeError("No segments were generated from the input video.")
+        if short_video_mode:
+            print(
+                f"[pipeline] Short video detected (duration {approx_duration:.2f}s). "
+                "Skipping spatiotemporal retrieval and sampling at 1 FPS."
+            )
 
         subtitle_entries = _load_subtitle_entries(subtitle_json)
-        if subtitle_entries:
-            segment_infos = _attach_subtitles(segment_infos, subtitle_entries)
+
+        if short_video_mode:
+            end_frame_index = int(video_total_frames) - 1 if video_total_frames > 0.0 else 0
+            segment_infos = [
+                {
+                    "segment_index": 0,
+                    "path": video_path,
+                    "start_sec": 0.0,
+                    "end_sec": approx_duration if approx_duration > 0.0 else 0.0,
+                    "start_frame": 0,
+                    "end_frame": max(end_frame_index, 0),
+                    "fps": video_fps if video_fps > 0.0 else None,
+                }
+            ]
+            if subtitle_entries:
+                segment_infos = _attach_subtitles(segment_infos, subtitle_entries)
+            else:
+                segment_infos = list(segment_infos)
+            graph = None
         else:
-            segment_infos = list(segment_infos)
+            embeddings, frames = extract_visual_embeddings(
+                video_path, frame_interval=frame_interval
+            )
+            change_points, _ = cluster_and_segment(
+                video_path,
+                embeddings,
+                frames,
+                method="kmeans",
+                n_clusters=n_clusters,
+            )
+
+            segment_infos = export_segments(
+                video_path,
+                change_points,
+                output_dir=segments_dir,
+                min_segment_sec=min_segment_sec,
+            )
+
+            if not segment_infos:
+                raise RuntimeError("No segments were generated from the input video.")
+
+            if subtitle_entries:
+                segment_infos = _attach_subtitles(segment_infos, subtitle_entries)
+            else:
+                segment_infos = list(segment_infos)
+
+            graph = build_spatiotemporal_graph(
+                compute_video_features(segment_infos, frame_interval=embedding_frame_interval),
+                temporal_weight=temporal_weight,
+            )
 
         print("--------------------segment_infos:")
         print(segment_infos)
-
-        segment_features = compute_video_features(segment_infos, frame_interval=embedding_frame_interval)
-        graph = build_spatiotemporal_graph(segment_features, temporal_weight=temporal_weight)
 
         original_query = query.strip()
         intent = analyze_query_intent(query)
@@ -566,6 +631,8 @@ def run_pipeline(
         print(vision_query)
 
         total_duration = max((info.get("end_sec") or 0.0) for info in segment_infos)
+        if total_duration > 0.0:
+            approx_duration = total_duration
 
         if intent.get("time_search"):
             time_focus_analysis = analyze_time_focus(query)
@@ -629,42 +696,52 @@ def run_pipeline(
                     item["end_sec"] = end_sec
                     item["timestamp_label"] = timestamp_label(item.get("timestamp", 0.0))
 
-        effective_top_k = top_k
-        effective_spatial_k = spatial_k
-        if intent.get("subtitle_search"):
-            effective_top_k = 1
-            effective_spatial_k = 1
+        if short_video_mode:
+            selected_segments = list(segment_infos)
+            rerank_inputs = list(segment_infos)
+        else:
+            effective_top_k = top_k
+            effective_spatial_k = spatial_k
+            if intent.get("subtitle_search"):
+                effective_top_k = 1
+                effective_spatial_k = 1
 
-        selected_segments = retrieve_topk_segments(
-            graph,
-            vision_query,
-            top_k=effective_top_k,
-            spatial_k=effective_spatial_k,
-        )
+            selected_segments = retrieve_topk_segments(
+                graph,
+                vision_query,
+                top_k=effective_top_k,
+                spatial_k=effective_spatial_k,
+            )
 
-        if not selected_segments:
-            raise RuntimeError("No segments were selected from the retrieval stage.")
+            if not selected_segments:
+                raise RuntimeError("No segments were selected from the retrieval stage.")
 
-        merged_segments = _merge_attribute_results(
-            graph,
-            selected_segments,
-            intent=intent,
-            query=vision_query,
-            attribute_top_k=attribute_top_k,
-            subtitle_query=subtitle_query_text,
-            subtitle_neighbor_hops=subtitle_neighbor_hops,
-        )
+            merged_segments = _merge_attribute_results(
+                graph,
+                selected_segments,
+                intent=intent,
+                query=vision_query,
+                attribute_top_k=attribute_top_k,
+                subtitle_query=subtitle_query_text,
+                subtitle_neighbor_hops=subtitle_neighbor_hops,
+            )
 
-        max_segments = max(top_k + attribute_top_k, len(selected_segments))
-        selected_segments = merged_segments[:max_segments]
+            max_segments = max(top_k + attribute_top_k, len(selected_segments))
+            rerank_inputs = merged_segments[:max_segments]
+
+        if not rerank_inputs:
+            raise RuntimeError("No segments are available for reranking.")
+
+        selected_segments = list(rerank_inputs)
 
         final_frames = rerank_segments(
-            selected_segments,
+            rerank_inputs,
             query=vision_query,
             frame_interval=rerank_frame_interval,
             top_frames=top_frames,
             output_dir=output_dir,
             min_frames_per_clip=min_frames_per_clip,
+            target_sample_fps=1.0 if short_video_mode else None,
         )
 
         results_path = os.path.join(output_dir, "rerank_results.json")
@@ -692,6 +769,12 @@ def run_pipeline(
                     "time_focus_range": {
                         "start_sec": time_focus_results[0]["start_sec"] if time_focus_results else 0.0,
                         "end_sec": time_focus_results[0]["end_sec"] if time_focus_results else 0.0,
+                    },
+                    "short_video_mode": short_video_mode,
+                    "video_metadata": {
+                        "fps": video_fps,
+                        "total_frames": video_total_frames,
+                        "duration_sec": approx_duration,
                     },
                 },
                 f,
@@ -744,6 +827,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--time-min-window", type=float, default=2.0, dest="time_min_window"
     )
+    parser.add_argument(
+        "--short-video-threshold",
+        type=float,
+        default=240.0,
+        dest="short_video_threshold",
+        help="Duration (in seconds) below which the pipeline skips graph retrieval and samples at 1 FPS.",
+    )
     parser.add_argument("--batch-config", type=str, default="sampled_longvideobench_test_augmented.json", dest="batch_config", help="JSON file describing batch inputs")
     parser.add_argument("--video-root", type=str, default="./videos", dest="video_root", help="Base directory for resolving relative video paths in batch mode")
     parser.add_argument("--subtitle-root", type=str, default="./subtitles", dest="subtitle_root", help="Base directory for resolving relative subtitle paths in batch mode")
@@ -767,6 +857,7 @@ if __name__ == "__main__":
         time_sampling_interval=args.time_sampling_interval,
         time_range_padding=args.time_range_padding,
         time_min_window=args.time_min_window,
+        short_video_threshold=args.short_video_threshold,
     )
 
     batch_config = args.batch_config.strip()
