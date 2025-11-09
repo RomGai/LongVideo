@@ -729,10 +729,10 @@ if __name__ == "__main__":
         "--subtitle-neighbor-hops", type=int, default=3, dest="subtitle_neighbor_hops"
     )
     parser.add_argument(
-        "--time-focus-ratio", type=float, default=0.05, dest="time_focus_ratio"
+        "--time-focus-ratio", type=float, default=0.04, dest="time_focus_ratio"
     )
     parser.add_argument(
-        "--time-sampling-interval", type=int, default=10, dest="time_sampling_interval"
+        "--time-sampling-interval", type=int, default=20, dest="time_sampling_interval"
     )
     parser.add_argument(
         "--time-range-padding", type=float, default=1.0, dest="time_range_padding"
