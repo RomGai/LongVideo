@@ -74,11 +74,28 @@ def _normalize_subtitle_time(value: Any) -> Optional[float]:
     return None
 
 
+def _resolve_path(base_dir: Optional[str], candidate: Optional[str]) -> Optional[str]:
+    """Resolve ``candidate`` relative to ``base_dir`` if it's not absolute."""
+
+    if not candidate:
+        return None
+    candidate = candidate.strip()
+    if not candidate:
+        return None
+    if os.path.isabs(candidate):
+        return candidate
+    if os.path.exists(candidate):
+        return os.path.abspath(candidate)
+    base_dir = base_dir or ""
+    return os.path.abspath(os.path.join(base_dir, candidate))
+
+
 def _load_subtitle_entries(path: Optional[str]) -> List[Dict[str, Any]]:
     if not path:
         return []
     if not os.path.exists(path):
-        raise FileNotFoundError(f"Subtitle file not found: {path}")
+        print(f"[pipeline] Subtitle file not found, skipping: {path}")
+        return []
 
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
@@ -331,6 +348,101 @@ def _sparse_sample_time_range(
 
     cap.release()
     return sampled
+
+
+def run_batch_from_config(
+    config_path: str,
+    output_root: str,
+    *,
+    video_root: Optional[str] = None,
+    subtitle_root: Optional[str] = None,
+    default_query_field: str = "query_retrieval",
+    fallback_query_fields: Optional[Iterable[str]] = None,
+    **pipeline_kwargs,
+) -> Dict[str, Dict[str, List[Dict]]]:
+    """Run the pipeline for every entry defined in a batch configuration file.
+
+    Args:
+        config_path: Path to the JSON file describing the batch inputs.
+        output_root: Directory where per-video results will be written.
+        video_root: Optional base directory for resolving video paths.
+        subtitle_root: Optional base directory for resolving subtitle paths.
+        default_query_field: Preferred key in each JSON entry for the query text.
+        fallback_query_fields: Additional keys to look up if the default is missing.
+        **pipeline_kwargs: Additional keyword arguments passed to :func:`run_pipeline`.
+
+    Returns:
+        A mapping from entry identifiers (``id`` when available, otherwise the
+        video stem) to the resulting data returned by :func:`run_pipeline`.
+    """
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        entries = json.load(f)
+
+    if not isinstance(entries, list):
+        raise ValueError("Batch configuration must be a JSON list of entries.")
+
+    output_root = os.path.abspath(output_root)
+    os.makedirs(output_root, exist_ok=True)
+
+    batch_results: Dict[str, Dict[str, List[Dict]]] = {}
+    fallback_fields = list(fallback_query_fields or ["query", "query_vlm"])
+
+    for idx, entry in enumerate(entries, start=1):
+        if not isinstance(entry, dict):
+            print(f"[pipeline] Skipping non-dict entry at index {idx - 1}.")
+            continue
+
+        video_rel_path = entry.get("video_path")
+        video_path = _resolve_path(video_root, video_rel_path)
+        if not video_path or not os.path.exists(video_path):
+            print(
+                f"[pipeline] Skipping entry {entry.get('id', idx)}: video not found"
+                f" ({video_rel_path})."
+            )
+            continue
+
+        subtitle_rel_path = entry.get("subtitle_path")
+        subtitle_path = _resolve_path(subtitle_root, subtitle_rel_path)
+        if subtitle_path and not os.path.exists(subtitle_path):
+            subtitle_path = None
+
+        query = entry.get(default_query_field)
+        if not query:
+            for field in fallback_fields:
+                query = entry.get(field)
+                if query:
+                    break
+        if not query:
+            print(f"[pipeline] Skipping entry {entry.get('id', idx)}: missing query text.")
+            continue
+
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        item_id = entry.get("id") or video_name
+        video_output_dir = os.path.join(output_root, video_name)
+
+        print("=" * 80)
+        print(
+            f"[pipeline] Processing entry {idx}/{len(entries)}: id={item_id}, video={video_rel_path}"
+        )
+
+        results = run_pipeline(
+            video_path=video_path,
+            query=query,
+            output_dir=video_output_dir,
+            subtitle_json=subtitle_path,
+            **pipeline_kwargs,
+        )
+
+        batch_results[item_id] = results
+
+    summary_path = os.path.join(output_root, "batch_results.json")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(_to_serializable(batch_results), f, ensure_ascii=False, indent=2)
+
+    print(f"[pipeline] Batch processing complete. Summary saved to {summary_path}")
+
+    return batch_results
 
 
 def run_pipeline(
@@ -598,11 +710,9 @@ def run_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the full long-video retrieval pipeline")
-    parser.add_argument("--video", type=str, default="./videos/f44gpGR4uWU.mp4",help="Path to the input video")
-    #parser.add_argument("--video", type=str, default="./videos/G1D9C7kRx10.mp4",help="Path to the input video")
-    parser.add_argument("--query", type=str, default="Question: In the opening of the video, there's a man wearing a black top and a gray hat in the car. In which of the following scenes does he appear later? A. In the water. B. In the car, on the sofa. C. On the mountain. D. In the bathroom.",help="Text query for retrieval") #Answer with the option's letter from the given choices directly.
-    # parser.add_argument("--query", type=str, default="Question: On a desk with a needle-shaped green leaf, there is a picture. A person is drawing with a pen. After the subtitle 'The snow fairy was hurt, and the next time she was sent to the mountains of ...', what does this person do? A. Picks up the drawing with both hands. B. Picks up the rubber. C. Puts down the drawing. D. Pats the rabbit.",help="Text query for retrieval") # Answer with the option's letter from the given choices directly.
-    parser.add_argument("--output", type=str, default="./output/",help="Directory to save the final ranked frames")
+    parser.add_argument("--video", type=str, default="./videos/f44gpGR4uWU.mp4", help="Path to the input video")
+    parser.add_argument("--query", type=str, default="Question: In the opening of the video, there's a man wearing a black top and a gray hat in the car. In which of the following scenes does he appear later? A. In the water. B. In the car, on the sofa. C. On the mountain. D. In the bathroom.", help="Text query for retrieval")
+    parser.add_argument("--output", type=str, default="./output/", help="Directory to save the final ranked frames")
     parser.add_argument("--frame-interval", type=int, default=30, dest="frame_interval")
     parser.add_argument("--clusters", type=int, default=30, dest="n_clusters")
     parser.add_argument("--min-segment-sec", type=float, default=1, dest="min_segment_sec")
@@ -613,7 +723,6 @@ if __name__ == "__main__":
     parser.add_argument("--top-frames", type=int, default=128, dest="top_frames")
     parser.add_argument("--temporal-weight", type=float, default=1.0, dest="temporal_weight")
     parser.add_argument("--subtitle-json", type=str, default="./subtitles/f44gpGR4uWU_en.json", dest="subtitle_json")
-    #parser.add_argument("--subtitle-json", type=str, default="./subtitles/G1D9C7kRx10_en.json", dest="subtitle_json")
     parser.add_argument("--attribute-top-k", type=int, default=1, dest="attribute_top_k")
     parser.add_argument("--min-frames-per-clip", type=int, default=4, dest="min_frames_per_clip")
     parser.add_argument(
@@ -631,14 +740,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--time-min-window", type=float, default=2.0, dest="time_min_window"
     )
+    parser.add_argument("--batch-config", type=str, default="", dest="batch_config", help="JSON file describing batch inputs")
+    parser.add_argument("--video-root", type=str, default="./videos", dest="video_root", help="Base directory for resolving relative video paths in batch mode")
+    parser.add_argument("--subtitle-root", type=str, default="./subtitles", dest="subtitle_root", help="Base directory for resolving relative subtitle paths in batch mode")
 
     args = parser.parse_args()
 
-
-    results = run_pipeline(
-        video_path=args.video,
-        query=args.query,
-        output_dir=args.output,
+    pipeline_kwargs = dict(
         frame_interval=args.frame_interval,
         n_clusters=args.n_clusters,
         min_segment_sec=args.min_segment_sec,
@@ -648,7 +756,6 @@ if __name__ == "__main__":
         rerank_frame_interval=args.rerank_frame_interval,
         top_frames=args.top_frames,
         temporal_weight=args.temporal_weight,
-        subtitle_json=args.subtitle_json,
         attribute_top_k=args.attribute_top_k,
         min_frames_per_clip=args.min_frames_per_clip,
         subtitle_neighbor_hops=args.subtitle_neighbor_hops,
@@ -658,4 +765,25 @@ if __name__ == "__main__":
         time_min_window=args.time_min_window,
     )
 
-    print(json.dumps(results, ensure_ascii=False, indent=2))
+    batch_config = args.batch_config.strip()
+    if batch_config:
+        run_batch_from_config(
+            config_path=batch_config,
+            output_root=args.output,
+            video_root=args.video_root,
+            subtitle_root=args.subtitle_root,
+            **pipeline_kwargs,
+        )
+    else:
+        video_path = _resolve_path(args.video_root, args.video)
+        subtitle_path = _resolve_path(args.subtitle_root, args.subtitle_json)
+
+        results = run_pipeline(
+            video_path=video_path,
+            query=args.query,
+            output_dir=args.output,
+            subtitle_json=subtitle_path,
+            **pipeline_kwargs,
+        )
+
+        print(json.dumps(results, ensure_ascii=False, indent=2))
