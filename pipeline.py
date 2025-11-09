@@ -710,8 +710,11 @@ def run_pipeline(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the full long-video retrieval pipeline")
-    parser.add_argument("--video", type=str, default="./videos/f44gpGR4uWU.mp4", help="Path to the input video")
-    parser.add_argument("--query", type=str, default="Question: In the opening of the video, there's a man wearing a black top and a gray hat in the car. In which of the following scenes does he appear later? A. In the water. B. In the car, on the sofa. C. On the mountain. D. In the bathroom.", help="Text query for retrieval")
+    # parser.add_argument("--video", type=str, default="./videos/f44gpGR4uWU.mp4", help="Path to the input video")
+    # parser.add_argument("--query", type=str, default="Question: In the opening of the video, there's a man wearing a black top and a gray hat in the car. In which of the following scenes does he appear later? A. In the water. B. In the car, on the sofa. C. On the mountain. D. In the bathroom.", help="Text query for retrieval")
+    # parser.add_argument("--output", type=str, default="./output/", help="Directory to save the final ranked frames")
+    parser.add_argument("--video", type=str, default=None, help="Path to the input video")
+    parser.add_argument("--query", type=str, default=None, help="Text query for retrieval")
     parser.add_argument("--output", type=str, default="./output/", help="Directory to save the final ranked frames")
     parser.add_argument("--frame-interval", type=int, default=30, dest="frame_interval")
     parser.add_argument("--clusters", type=int, default=30, dest="n_clusters")
@@ -722,7 +725,8 @@ if __name__ == "__main__":
     parser.add_argument("--rerank-frame-interval", type=int, default=5, dest="rerank_frame_interval")
     parser.add_argument("--top-frames", type=int, default=128, dest="top_frames")
     parser.add_argument("--temporal-weight", type=float, default=1.0, dest="temporal_weight")
-    parser.add_argument("--subtitle-json", type=str, default="./subtitles/f44gpGR4uWU_en.json", dest="subtitle_json")
+    # parser.add_argument("--subtitle-json", type=str, default="./subtitles/f44gpGR4uWU_en.json", dest="subtitle_json")
+    parser.add_argument("--subtitle-json", type=str, default=None, dest="subtitle_json")
     parser.add_argument("--attribute-top-k", type=int, default=1, dest="attribute_top_k")
     parser.add_argument("--min-frames-per-clip", type=int, default=4, dest="min_frames_per_clip")
     parser.add_argument(
@@ -740,7 +744,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--time-min-window", type=float, default=2.0, dest="time_min_window"
     )
-    parser.add_argument("--batch-config", type=str, default="", dest="batch_config", help="JSON file describing batch inputs")
+    parser.add_argument("--batch-config", type=str, default="sampled_longvideobench_test_augmented.json", dest="batch_config", help="JSON file describing batch inputs")
     parser.add_argument("--video-root", type=str, default="./videos", dest="video_root", help="Base directory for resolving relative video paths in batch mode")
     parser.add_argument("--subtitle-root", type=str, default="./subtitles", dest="subtitle_root", help="Base directory for resolving relative subtitle paths in batch mode")
 
