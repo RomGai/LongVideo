@@ -650,9 +650,18 @@ def run_pipeline(
             if extracted_subtitle:
                 subtitle_query_text = extracted_subtitle
 
-            cleaned_candidate = subtitle_analysis.get("cleaned_query") if subtitle_analysis else ""
-            if cleaned_candidate:
-                cleaned_query = cleaned_candidate
+                cleaned_candidate = (
+                    subtitle_analysis.get("cleaned_query") if subtitle_analysis else ""
+                )
+                if cleaned_candidate:
+                    cleaned_query = cleaned_candidate
+            else:
+                # The intent model requested subtitle search, but no subtitle text was
+                # extracted from the query. Fall back to the original query and skip
+                # subtitle retrieval for this run.
+                intent["subtitle_search"] = False
+                subtitle_query_text = None
+                cleaned_query = original_query
 
             print(
                 "Subtitle rewrite:",
