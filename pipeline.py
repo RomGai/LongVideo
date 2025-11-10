@@ -379,6 +379,7 @@ def run_batch_from_config(
     subtitle_root: Optional[str] = None,
     default_query_field: str = "query_retrieval",
     fallback_query_fields: Optional[Iterable[str]] = None,
+    skip_existing: bool = True,
     **pipeline_kwargs,
 ) -> Dict[str, Dict[str, List[Dict]]]:
     """Run the pipeline for every entry defined in a batch configuration file.
@@ -391,6 +392,10 @@ def run_batch_from_config(
         default_query_field: Preferred key in each JSON entry for the query text.
         fallback_query_fields: Additional keys to look up if the default is missing.
         **pipeline_kwargs: Additional keyword arguments passed to :func:`run_pipeline`.
+        skip_existing: When ``True`` (default), skip entries whose output directory
+            already exists under ``output_root``. This allows interrupted runs to
+            resume without repeating completed work. When ``False``, existing
+            outputs are overwritten.
 
     Returns:
         A mapping from entry identifiers (``id`` when available, otherwise the
@@ -441,6 +446,42 @@ def run_batch_from_config(
         video_name = os.path.splitext(os.path.basename(video_path))[0]
         item_id = entry.get("id") or video_name
         video_output_dir = os.path.join(output_root, video_name)
+
+        if skip_existing and os.path.isdir(video_output_dir):
+            print(
+                f"[pipeline] Skipping entry {idx}/{len(entries)} (id={item_id}): "
+                f"existing output found at {video_output_dir}."
+            )
+
+            existing_results: Dict[str, List[Dict]] = {}
+            rerank_path = os.path.join(video_output_dir, "rerank_results.json")
+            time_path = os.path.join(video_output_dir, "time_focus_results.json")
+
+            if os.path.exists(rerank_path):
+                try:
+                    with open(rerank_path, "r", encoding="utf-8") as f:
+                        existing_results["reranked_frames"] = json.load(f)
+                except (OSError, json.JSONDecodeError) as exc:
+                    print(
+                        f"[pipeline] Warning: Failed to load existing rerank results "
+                        f"for {item_id}: {exc}"
+                    )
+
+            if os.path.exists(time_path):
+                try:
+                    with open(time_path, "r", encoding="utf-8") as f:
+                        existing_results["time_focus_frames"] = json.load(f)
+                except (OSError, json.JSONDecodeError) as exc:
+                    print(
+                        f"[pipeline] Warning: Failed to load existing time focus results "
+                        f"for {item_id}: {exc}"
+                    )
+
+            if existing_results:
+                batch_results[item_id] = existing_results
+            else:
+                batch_results[item_id] = {"skipped": True}
+            continue
 
         print("=" * 80)
         print(
@@ -836,7 +877,21 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch-config", type=str, default="sampled_longvideobench_test_augmented.json", dest="batch_config", help="JSON file describing batch inputs")
     parser.add_argument("--video-root", type=str, default="./videos", dest="video_root", help="Base directory for resolving relative video paths in batch mode")
-    parser.add_argument("--subtitle-root", type=str, default="./subtitles", dest="subtitle_root", help="Base directory for resolving relative subtitle paths in batch mode")
+    parser.add_argument(
+        "--subtitle-root",
+        type=str,
+        default="./subtitles",
+        dest="subtitle_root",
+        help="Base directory for resolving relative subtitle paths in batch mode",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Reprocess entries even if their output directory already exists. "
+            "By default, the batch runner skips completed videos so that runs can resume."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -867,6 +922,7 @@ if __name__ == "__main__":
             output_root=args.output,
             video_root=args.video_root,
             subtitle_root=args.subtitle_root,
+            skip_existing=not args.force,
             **pipeline_kwargs,
         )
     else:
