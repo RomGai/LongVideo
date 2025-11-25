@@ -48,22 +48,43 @@ def insert_subtitles(subtitles):
 
     return interleaved_list
         
-def insert_subtitles_into_frames(frames, frame_timestamps, subtitles, 
-                                 starting_timestamp_for_subtitles, duration):
-    interleaved_list = []
+def insert_subtitles_into_frames(
+    frames,
+    frame_timestamps,
+    subtitles,
+    starting_timestamp_for_subtitles,
+    duration,
+    deduplicate_adjacent: bool = True,
+):
+    def _append_item(target_list: List[Any], item: Any):
+        if not deduplicate_adjacent:
+            target_list.append(item)
+            return
+
+        if not target_list:
+            target_list.append(item)
+            return
+
+        last_item = target_list[-1]
+        if isinstance(last_item, str) and isinstance(item, str):
+            if last_item.strip() == item.strip():
+                return
+        target_list.append(item)
+
+    interleaved_list: List[Any] = []
     cur_i = 0
-    
+
     for subtitle in subtitles:
         if "timestamp" in subtitle:
             start, end = subtitle["timestamp"]
 
             if not isinstance(end, float):
                 end = duration
-                
+
             start -= starting_timestamp_for_subtitles
             end -= starting_timestamp_for_subtitles
-            
-            
+
+
             subtitle_timestamp = (start + end) / 2
             subtitle_text = subtitle["text"]
         else:
@@ -72,15 +93,15 @@ def insert_subtitles_into_frames(frames, frame_timestamps, subtitles,
             end = timestamp_to_seconds(end)
             start -= starting_timestamp_for_subtitles
             end -= starting_timestamp_for_subtitles
-            
+
             subtitle_timestamp = (start + end) / 2
             subtitle_text = subtitle["line"]
 
-        
+
         for i, (frame, frame_timestamp) in enumerate(zip(frames[cur_i:], frame_timestamps[cur_i:])):
                 if frame_timestamp <= subtitle_timestamp:
                     #print("frame:", frame_timestamp)
-                    interleaved_list.append(frame)
+                    _append_item(interleaved_list, frame)
                     cur_i += 1
                 else:
                     break
@@ -97,15 +118,15 @@ def insert_subtitles_into_frames(frames, frame_timestamps, subtitles,
         #
         if covering_frames:
             #print("subtitle:", subtitle_timestamp, start, end)
-            interleaved_list.append(subtitle_text)
+            _append_item(interleaved_list, subtitle_text)
         else:
             pass
             #print("leaving out subtitle:", start, end)
-        
+
     for i, (frame, frame_timestamp) in enumerate(zip(frames[cur_i:], frame_timestamps[cur_i:])):
         #print(frame_timestamp)
-        interleaved_list.append(frame)
-        
+        _append_item(interleaved_list, frame)
+
     return interleaved_list
     
 def _load_json(path: str) -> Any:
