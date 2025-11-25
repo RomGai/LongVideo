@@ -414,6 +414,16 @@ def run_batch_from_config(
     batch_results: Dict[str, Dict[str, List[Dict]]] = {}
     fallback_fields = list(fallback_query_fields or ["query", "query_vlm"])
 
+    def _with_metadata(results: Dict[str, Any], entry_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach entry-level metadata (e.g., correct_choice) to the result payload."""
+
+        if "correct_choice" not in entry_data:
+            return results
+
+        merged = dict(results)
+        merged["correct_choice"] = entry_data.get("correct_choice")
+        return merged
+
     for idx, entry in enumerate(entries, start=1):
         if not isinstance(entry, dict):
             print(f"[pipeline] Skipping non-dict entry at index {idx - 1}.")
@@ -478,9 +488,9 @@ def run_batch_from_config(
                     )
 
             if existing_results:
-                batch_results[item_id] = existing_results
+                batch_results[item_id] = _with_metadata(existing_results, entry)
             else:
-                batch_results[item_id] = {"skipped": True}
+                batch_results[item_id] = _with_metadata({"skipped": True}, entry)
             continue
 
         print("=" * 80)
@@ -496,7 +506,7 @@ def run_batch_from_config(
             **pipeline_kwargs,
         )
 
-        batch_results[item_id] = results
+        batch_results[item_id] = _with_metadata(results, entry)
 
     summary_path = os.path.join(output_root, "batch_results.json")
     with open(summary_path, "w", encoding="utf-8") as f:
