@@ -884,7 +884,7 @@ if __name__ == "__main__":
         dest="short_video_threshold",
         help="Duration (in seconds) below which the pipeline skips graph retrieval and samples at 1 FPS.",
     )
-    parser.add_argument("--batch-config", type=str, default="sampled_longvideobench_test_augmented.json", dest="batch_config", help="JSON file describing batch inputs")
+    parser.add_argument("--batch-config", type=str, default="sampled_longvideobench_val_augmented.json", dest="batch_config", help="JSON file describing batch inputs")
     parser.add_argument("--video-root", type=str, default="./videos", dest="video_root", help="Base directory for resolving relative video paths in batch mode")
     parser.add_argument(
         "--subtitle-root",
