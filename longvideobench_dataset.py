@@ -257,8 +257,27 @@ class LongVideoBenchDataset(Dataset):
 
 if __name__ == "__main__":
     db = LongVideoBenchDataset("./output")
+    def _describe_inputs(inputs: List[Any]) -> List[str]:
+        descriptions: List[str] = []
+        for idx, item in enumerate(inputs):
+            if isinstance(item, str):
+                descriptions.append(f"{idx:02d} text: {item}")
+            elif isinstance(item, Image.Image):
+                descriptions.append(
+                    f"{idx:02d} frame: size={item.size} mode={item.mode}"
+                )
+            else:
+                descriptions.append(f"{idx:02d} unknown type: {type(item)}")
+        return descriptions
+
     for i in range(min(10, len(db))):
-        print(db[i]["id"], len([ele for ele in db[i]["inputs"] if not isinstance(ele, str)]))
+        sample = db[i]
+        print("\nSample ID:", sample["id"])
+        frame_count = len([ele for ele in sample["inputs"] if not isinstance(ele, str)])
+        print("Frame count:", frame_count)
+        print("Detailed inputs:")
+        for desc in _describe_inputs(sample["inputs"]):
+            print(desc)
                      
 
             
