@@ -153,6 +153,35 @@ def _gather_subtitles(selected_segments: List[Dict[str, Any]]) -> Tuple[List[Dic
     return subtitles, max_end
 
 
+def _load_batch_correct_choices(output_root: str) -> Dict[str, int]:
+    """Load correct choice metadata from the batch summary when available."""
+
+    summary_path = os.path.join(output_root, "batch_results.json")
+    if not os.path.exists(summary_path):
+        return {}
+
+    try:
+        summary = _load_json(summary_path)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(summary, dict):
+        return {}
+
+    choices: Dict[str, int] = {}
+    for key, value in summary.items():
+        if not isinstance(value, dict):
+            continue
+        if "correct_choice" not in value:
+            continue
+        try:
+            choices[str(key)] = int(value.get("correct_choice", -1))
+        except (TypeError, ValueError):
+            continue
+
+    return choices
+
+
 def _load_frames_from_results(paths: List[Dict[str, Any]], max_num_frames: int) -> Tuple[List[Image.Image], List[float]]:
     sorted_frames = sorted(paths, key=lambda x: float(x.get("timestamp") or 0.0))
     if max_num_frames > 0 and len(sorted_frames) > max_num_frames:
@@ -190,6 +219,7 @@ class LongVideoBenchDataset(Dataset):
         self.max_num_frames = max_num_frames
 
         self.data: List[Dict[str, Any]] = []
+        batch_correct_choices = _load_batch_correct_choices(output_root)
         for name in sorted(os.listdir(output_root)):
             video_dir = os.path.join(output_root, name)
             if not os.path.isdir(video_dir):
@@ -205,6 +235,10 @@ class LongVideoBenchDataset(Dataset):
             rerank_results = _load_json(rerank_path)
             retrieval_plan = _load_json(plan_path)
             time_focus_results = _load_json(time_focus_path) if os.path.exists(time_focus_path) else []
+
+            correct_choice = batch_correct_choices.get(name)
+            if correct_choice is None:
+                correct_choice = retrieval_plan.get("correct_choice", -1)
 
             selected_segments = retrieval_plan.get("selected_segments") or []
             subtitles, max_segment_end = _gather_subtitles(selected_segments)
@@ -222,7 +256,7 @@ class LongVideoBenchDataset(Dataset):
                     or retrieval_plan.get("query_variants", {}).get("vision")
                     or "",
                     "candidates": retrieval_plan.get("candidates", []),
-                    "correct_choice": retrieval_plan.get("correct_choice", -1),
+                    "correct_choice": correct_choice,
                 }
             )
 
