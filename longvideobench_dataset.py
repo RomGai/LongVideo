@@ -7,7 +7,8 @@ from PIL import Image
 import torch
 
 import json
-from typing import Dict, List, Any, Tuple
+from difflib import SequenceMatcher
+from typing import Dict, List, Any, Tuple, Optional
 
 def timestamp_to_seconds(timestamp):
     # Split the timestamp into hours, minutes, and seconds
@@ -182,6 +183,182 @@ def _load_batch_correct_choices(output_root: str) -> Dict[str, int]:
     return choices
 
 
+def _normalize_text(text: str) -> str:
+    return " ".join(text.lower().strip().split())
+
+
+def _subtitle_similarity(target: str, candidate: str) -> float:
+    target_norm = _normalize_text(target)
+    candidate_norm = _normalize_text(candidate)
+    if not target_norm or not candidate_norm:
+        return 0.0
+    matcher = SequenceMatcher(None, target_norm, candidate_norm)
+    return matcher.ratio()
+
+
+def _find_best_subtitle_match(
+    subtitles: List[Dict[str, Any]], subtitle_query: str
+) -> Optional[Dict[str, Any]]:
+    if not subtitle_query:
+        return None
+    best_subtitle: Optional[Dict[str, Any]] = None
+    best_score = 0.0
+    for entry in subtitles:
+        score = _subtitle_similarity(subtitle_query, entry.get("text") or "")
+        if score > best_score:
+            best_score = score
+            best_subtitle = entry
+    return best_subtitle
+
+
+def _dedupe_and_normalize_frames(paths: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen = set()
+    normalized: List[Dict[str, Any]] = []
+    for item in paths:
+        frame_path = item.get("output_path") or item.get("path")
+        if not frame_path:
+            continue
+        ts = float(item.get("timestamp") or 0.0)
+        key = (frame_path, ts)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"output_path": frame_path, "timestamp": ts, **item})
+    return normalized
+
+
+def _sample_frames_in_range(
+    frames: List[Dict[str, Any]], start: float, end: float, count: int
+) -> List[Dict[str, Any]]:
+    if count <= 0:
+        return []
+    candidates = [f for f in frames if start <= float(f.get("timestamp", 0.0)) <= end]
+    if not candidates:
+        return []
+    if len(candidates) <= count:
+        return candidates
+    indices = np.linspace(0, len(candidates) - 1, count, dtype=int)
+    return [candidates[i] for i in indices]
+
+
+def _pick_frame_at_timestamp(
+    frames: List[Dict[str, Any]], target_ts: float
+) -> Optional[Dict[str, Any]]:
+    later_frames = [f for f in frames if float(f.get("timestamp", 0.0)) >= target_ts]
+    if later_frames:
+        later_frames.sort(key=lambda x: float(x.get("timestamp", 0.0)))
+        return later_frames[0]
+    if not frames:
+        return None
+    frames.sort(key=lambda x: float(x.get("timestamp", 0.0)))
+    return frames[-1]
+
+
+def _refine_frames_with_secondary_retrieval(
+    frames_info: List[Dict[str, Any]],
+    subtitles: List[Dict[str, Any]],
+    *,
+    max_num_frames: int,
+    subtitle_enabled: bool,
+    subtitle_query: str,
+    time_enabled: bool,
+    time_range: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    if max_num_frames <= 0:
+        return [], []
+
+    normalized_frames = _dedupe_and_normalize_frames(frames_info)
+    normalized_frames.sort(key=lambda x: float(x.get("timestamp", 0.0)))
+
+    selected_frames: List[Dict[str, Any]] = []
+    matched_subtitle = None
+
+    if subtitle_enabled:
+        matched_subtitle = _find_best_subtitle_match(subtitles, subtitle_query)
+        if matched_subtitle:
+            start, end = matched_subtitle.get("timestamp", (0.0, 0.0))
+            start = float(start)
+            end = float(end)
+            subtitle_ts = (start + end) / 2
+
+            pre_start = max(0.0, start - 2.0)
+            pre_end = max(pre_start, start)
+            selected_frames.extend(
+                _sample_frames_in_range(normalized_frames, pre_start, pre_end, count=2)
+            )
+
+            at_frame = _pick_frame_at_timestamp(normalized_frames, start)
+            if at_frame:
+                selected_frames.append(at_frame)
+
+            post_end = subtitle_ts + 5.0
+            selected_frames.extend(
+                _sample_frames_in_range(
+                    normalized_frames, subtitle_ts, post_end, count=5
+                )
+            )
+
+    time_frames: List[Dict[str, Any]] = []
+    if time_enabled and time_range:
+        start = float(time_range.get("start_sec") or 0.0)
+        end = float(time_range.get("end_sec") or start)
+        if end < start:
+            start, end = end, start
+        sample_count = 4 if subtitle_enabled else 8
+        time_frames = _sample_frames_in_range(normalized_frames, start, end, sample_count)
+        selected_frames.extend(time_frames)
+
+    selected_keys = set()
+    unique_selected: List[Dict[str, Any]] = []
+    for frame in selected_frames:
+        key = (frame.get("output_path"), float(frame.get("timestamp", 0.0)))
+        if key in selected_keys:
+            continue
+        selected_keys.add(key)
+        unique_selected.append(frame)
+
+    remaining_budget = max_num_frames - len(unique_selected)
+    if remaining_budget > 0:
+        scored_frames = sorted(
+            normalized_frames,
+            key=lambda x: float(x.get("score") or 0.0),
+            reverse=True,
+        )
+        for frame in scored_frames:
+            key = (frame.get("output_path"), float(frame.get("timestamp", 0.0)))
+            if key in selected_keys:
+                continue
+            unique_selected.append(frame)
+            selected_keys.add(key)
+            remaining_budget -= 1
+            if remaining_budget <= 0:
+                break
+
+    if len(unique_selected) > max_num_frames:
+        indices = np.linspace(0, len(unique_selected) - 1, max_num_frames, dtype=int)
+        unique_selected = [unique_selected[i] for i in indices]
+
+    unique_selected.sort(key=lambda x: float(x.get("timestamp", 0.0)))
+
+    if not unique_selected:
+        return [], []
+
+    frame_timestamps = [float(item.get("timestamp", 0.0)) for item in unique_selected]
+    filtered_subtitles: List[Dict[str, Any]] = []
+    for entry in subtitles:
+        start, end = entry.get("timestamp", (0.0, 0.0))
+        start = float(start)
+        end = float(end)
+        center = (start + end) / 2
+        if any(abs(center - ts) <= 0.5 for ts in frame_timestamps):
+            filtered_subtitles.append(entry)
+    if matched_subtitle and matched_subtitle not in filtered_subtitles:
+        filtered_subtitles.append(matched_subtitle)
+    filtered_subtitles.sort(key=lambda x: x.get("timestamp", (0.0, 0.0))[0])
+
+    return unique_selected, filtered_subtitles
+
+
 def _load_frames_from_results(paths: List[Dict[str, Any]], max_num_frames: int) -> Tuple[List[Image.Image], List[float]]:
     sorted_frames = sorted(paths, key=lambda x: float(x.get("timestamp") or 0.0))
     if max_num_frames > 0 and len(sorted_frames) > max_num_frames:
@@ -252,6 +429,10 @@ class LongVideoBenchDataset(Dataset):
                     "time_focus_results": time_focus_results,
                     "subtitles": subtitles,
                     "duration": duration,
+                    "intent": retrieval_plan.get("intent", {}),
+                    "subtitle_analysis": retrieval_plan.get("subtitle_analysis", {}),
+                    "query_variants": retrieval_plan.get("query_variants", {}),
+                    "time_focus_range": retrieval_plan.get("time_focus_range", {}),
                     "question": retrieval_plan.get("query_variants", {}).get("original")
                     or retrieval_plan.get("query_variants", {}).get("vision")
                     or "",
@@ -277,9 +458,33 @@ class LongVideoBenchDataset(Dataset):
             return {"inputs": inputs, "correct_choice": _format_correct_choice(), "id": di["id"]}
 
         frames_info = list(di.get("rerank_results", [])) + list(di.get("time_focus_results", []))
-        frames, frame_timestamps = _load_frames_from_results(frames_info, self.max_num_frames)
 
-        subtitles = di.get("subtitles", [])
+        intent = di.get("intent", {}) or {}
+        subtitle_query = (
+            di.get("subtitle_analysis", {}).get("subtitle_text")
+            or di.get("query_variants", {}).get("subtitle")
+            or ""
+        )
+        refined_frames_info, filtered_subtitles = _refine_frames_with_secondary_retrieval(
+            frames_info,
+            di.get("subtitles", []),
+            max_num_frames=self.max_num_frames,
+            subtitle_enabled=bool(intent.get("subtitle_search")),
+            subtitle_query=subtitle_query,
+            time_enabled=bool(intent.get("time_search")),
+            time_range=di.get("time_focus_range"),
+        )
+
+        if refined_frames_info:
+            frames, frame_timestamps = _load_frames_from_results(
+                refined_frames_info, len(refined_frames_info)
+            )
+            subtitles = filtered_subtitles
+        else:
+            frames, frame_timestamps = _load_frames_from_results(
+                frames_info, self.max_num_frames
+            )
+            subtitles = di.get("subtitles", [])
         inputs: List[Any] = []
         if self.insert_text:
             inputs = insert_subtitles_into_frames(
