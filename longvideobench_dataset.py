@@ -461,8 +461,8 @@ class LongVideoBenchDataset(Dataset):
 
         intent = di.get("intent", {}) or {}
         subtitle_query = (
-            di.get("subtitle_analysis", {}).get("subtitle_text")
-            or di.get("query_variants", {}).get("subtitle")
+            (di.get("subtitle_analysis") or {}).get("subtitle_text")
+            or (di.get("query_variants") or {}).get("subtitle")
             or ""
         )
         refined_frames_info, filtered_subtitles = _refine_frames_with_secondary_retrieval(
