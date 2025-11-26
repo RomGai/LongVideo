@@ -522,7 +522,7 @@ def run_pipeline(
     query: str,
     output_dir: str,
     frame_interval: int = 30,
-    n_clusters: int = 30,
+    n_clusters: int = 10,
     min_segment_sec: float = 0.4,
     embedding_frame_interval: int = 10,
     top_k: int = 3,
