@@ -516,7 +516,6 @@ class LongVideoBenchDataset(Dataset):
 
 
 if __name__ == "__main__":
-    db = LongVideoBenchDataset("./output")
     def _describe_inputs(inputs: List[Any]) -> List[str]:
         descriptions: List[str] = []
         for idx, item in enumerate(inputs):
@@ -530,14 +529,26 @@ if __name__ == "__main__":
                 descriptions.append(f"{idx:02d} unknown type: {type(item)}")
         return descriptions
 
-    for i in range(min(10, len(db))):
-        sample = db[i]
-        print("\nSample ID:", sample["id"])
-        frame_count = len([ele for ele in sample["inputs"] if not isinstance(ele, str)])
-        print("Frame count:", frame_count)
-        print("Detailed inputs:")
-        for desc in _describe_inputs(sample["inputs"]):
-            print(desc)
+    def _preview_dataset(db: "LongVideoBenchDataset", *, label: str):
+        print(f"\n===== {label} =====")
+        for i in range(min(3, len(db))):
+            sample = db[i]
+            print("\nSample ID:", sample["id"])
+            frame_count = len(
+                [ele for ele in sample["inputs"] if not isinstance(ele, str)]
+            )
+            print("Frame count:", frame_count)
+            print("Detailed inputs:")
+            for desc in _describe_inputs(sample["inputs"]):
+                print(desc)
+
+    # Default preview
+    db = LongVideoBenchDataset("./output")
+    _preview_dataset(db, label="Default (max_num_frames=256)")
+
+    # Example showing a refined pipeline capped at 16 frames after secondary retrieval
+    db_refined = LongVideoBenchDataset("./output", max_num_frames=16)
+    _preview_dataset(db_refined, label="Refined (max_num_frames=16)")
                      
 
             
