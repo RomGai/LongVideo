@@ -558,7 +558,7 @@ def run_pipeline(
     """执行完整的长视频检索与重排序流程。
 
     当视频时长低于 ``short_video_threshold`` 时，会自动跳过视觉语义检索，
-    直接以 1 FPS 采样整段视频并调用重排模块进行排序。
+    直接以 3 FPS 采样整段视频并调用重排模块进行排序。
 
     Returns:
         dict: 包含 ``reranked_frames``（经过节点检索和重排的帧列表）以及
@@ -592,7 +592,7 @@ def run_pipeline(
         if short_video_mode:
             print(
                 f"[pipeline] Short video detected (duration {approx_duration:.2f}s). "
-                "Skipping spatiotemporal retrieval and sampling at 1 FPS."
+                "Skipping spatiotemporal retrieval and sampling at 3 FPS."
             )
 
         subtitle_entries = _load_subtitle_entries(subtitle_json)
@@ -816,7 +816,7 @@ def run_pipeline(
             top_frames=top_frames,
             output_dir=output_dir,
             min_frames_per_clip=min_frames_per_clip,
-            target_sample_fps=1.0 if short_video_mode else None,
+            target_sample_fps=3.0 if short_video_mode else None,
         )
 
         results_path = os.path.join(output_dir, "rerank_results.json")
@@ -907,7 +907,7 @@ if __name__ == "__main__":
         type=float,
         default=240.0,
         dest="short_video_threshold",
-        help="Duration (in seconds) below which the pipeline skips graph retrieval and samples at 1 FPS.",
+        help="Duration (in seconds) below which the pipeline skips graph retrieval and samples at 3 FPS.",
     )
     parser.add_argument("--batch-config", type=str, default="sampled_longvideobench_val_augmented.json", dest="batch_config", help="JSON file describing batch inputs")
     parser.add_argument("--video-root", type=str, default="./videos", dest="video_root", help="Base directory for resolving relative video paths in batch mode")
