@@ -860,7 +860,7 @@ if __name__ == "__main__":
     parser.add_argument("--query", type=str, default=None, help="Text query for retrieval")
     parser.add_argument("--output", type=str, default="./output/", help="Directory to save the final ranked frames")
     parser.add_argument("--frame-interval", type=int, default=30, dest="frame_interval")
-    parser.add_argument("--clusters", type=int, default=30, dest="n_clusters")
+    parser.add_argument("--clusters", type=int, default=15, dest="n_clusters")
     parser.add_argument("--min-segment-sec", type=float, default=1, dest="min_segment_sec")
     parser.add_argument("--embed-frame-interval", type=int, default=10, dest="embedding_frame_interval")
     parser.add_argument("--top-k", type=int, default=1, dest="top_k")
