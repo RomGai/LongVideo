@@ -214,6 +214,21 @@ def _retrieve_nodes_by_attribute(
     if not documents:
         return []
 
+    stripped_query = (query or "").strip()
+
+    # Prefer exact/character-level matches of the subtitle text inside the source subtitle
+    # entries. This helps avoid cases where semantic similarity misses verbatim subtitle
+    # snippets provided by the user.
+    if stripped_query:
+        normalized_query = stripped_query.lower()
+        substring_hits: List[Tuple[int, float, str]] = []
+        for node_id, doc in zip(node_ids, documents):
+            if normalized_query in doc.lower():
+                substring_hits.append((node_id, 1.0, doc))
+
+        if substring_hits:
+            return substring_hits[: max(top_k, 1)]
+
     sims = compute_similarities(query, documents)
     scored = list(zip(node_ids, sims, documents))
     scored.sort(key=lambda x: x[1], reverse=True)
