@@ -102,14 +102,23 @@ def _build_prompt(timeline: List[str], question: str, candidates: List[str], fra
     )
 
 
-def _prepare_video_tensor(image_processor, frames: List[np.ndarray], device: str) -> torch.Tensor:
+def _get_model_dtype(model: torch.nn.Module) -> torch.dtype:
+    try:
+        return next(model.parameters()).dtype
+    except StopIteration:
+        return torch.bfloat16
+
+
+def _prepare_video_tensor(
+    image_processor, frames: List[np.ndarray], device: str, dtype: torch.dtype
+) -> torch.Tensor:
     if not frames:
         frames = [np.zeros((336, 336, 3), dtype=np.uint8)]
 
     video = image_processor.preprocess(np.stack(frames, axis=0), return_tensors="pt")[
         "pixel_values"
     ]
-    return video.to(device)
+    return video.to(device=device, dtype=dtype)
 
 
 def _run_sample(
@@ -118,7 +127,8 @@ def _run_sample(
     frames, timeline, question, candidates = _split_inputs(sample["inputs"])
     prompt = _build_prompt(timeline, question, candidates, len(frames))
 
-    video = _prepare_video_tensor(image_processor, frames, device)
+    model_dtype = _get_model_dtype(model)
+    video = _prepare_video_tensor(image_processor, frames, device, model_dtype)
     images = [video]
 
     conv = copy.deepcopy(conv_templates[CONV_TEMPLATE])
@@ -129,13 +139,14 @@ def _run_sample(
     input_ids = tokenizer_image_token(
         final_prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
     ).unsqueeze(0).to(device)
+    attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=device)
 
     output = model.generate(
         input_ids,
+        attention_mask=attention_mask,
         images=images,
         modalities=["video"],
         do_sample=False,
-        temperature=0,
         max_new_tokens=512,
     )
 
