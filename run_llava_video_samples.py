@@ -129,6 +129,12 @@ def _run_sample(
 
     model_dtype = _get_model_dtype(model)
     video = _prepare_video_tensor(image_processor, frames, device, model_dtype)
+    print(
+        f"Video dtype before alignment: {video.dtype}; model dtype: {model_dtype}"
+    )
+    if video.dtype != torch.float16:
+        video = video.to(device=device, dtype=torch.float16)
+        print("Converted video to float16 to match model dtype.")
     images = [video]
 
     conv = copy.deepcopy(conv_templates[CONV_TEMPLATE])
