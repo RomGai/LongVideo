@@ -158,7 +158,7 @@ def run_samples() -> None:
         PRETRAINED_MODEL,
         None,
         MODEL_NAME,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
         device_map=DEVICE_MAP,
     )
     model.eval()
