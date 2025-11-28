@@ -109,6 +109,16 @@ def _get_model_dtype(model: torch.nn.Module) -> torch.dtype:
         return torch.bfloat16
 
 
+def _get_video_target_dtype(model: torch.nn.Module) -> torch.dtype:
+    """Prefer the projector's dtype when aligning vision inputs."""
+
+    try:
+        projector = model.get_model().mm_projector
+        return next(projector.parameters()).dtype
+    except Exception:
+        return _get_model_dtype(model)
+
+
 def _prepare_video_tensor(
     image_processor, frames: List[np.ndarray], device: str, dtype: torch.dtype
 ) -> torch.Tensor:
@@ -128,7 +138,15 @@ def _run_sample(
     prompt = _build_prompt(timeline, question, candidates, len(frames))
 
     model_dtype = _get_model_dtype(model)
-    video = _prepare_video_tensor(image_processor, frames, device, model_dtype)
+    video_target_dtype = _get_video_target_dtype(model)
+    video = _prepare_video_tensor(image_processor, frames, device, video_target_dtype)
+    print(
+        "Video dtype before alignment: "
+        f"{video.dtype}; model dtype: {model_dtype}; projector dtype: {video_target_dtype}"
+    )
+    if video.dtype != video_target_dtype:
+        video = video.to(device=device, dtype=video_target_dtype)
+        print(f"Converted video to {video_target_dtype} to match projector dtype.")
     images = [video]
 
     conv = copy.deepcopy(conv_templates[CONV_TEMPLATE])
@@ -158,7 +176,7 @@ def run_samples() -> None:
         PRETRAINED_MODEL,
         None,
         MODEL_NAME,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
         device_map=DEVICE_MAP,
     )
     model.eval()
