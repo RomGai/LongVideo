@@ -57,6 +57,7 @@ DEVICE_MAP = os.getenv("LLAVA_DEVICE_MAP", "auto")
 MAX_FRAMES = int(os.getenv("MAX_FRAMES", "64"))
 NUM_SAMPLES = int(os.getenv("NUM_SAMPLES", "3"))
 CONV_TEMPLATE = os.getenv("LLAVA_CONV_TEMPLATE", "qwen_1_5")
+MODEL_DTYPE = torch.float16
 
 
 def _split_inputs(
@@ -103,10 +104,7 @@ def _build_prompt(timeline: List[str], question: str, candidates: List[str], fra
 
 
 def _get_model_dtype(model: torch.nn.Module) -> torch.dtype:
-    try:
-        return next(model.parameters()).dtype
-    except StopIteration:
-        return torch.bfloat16
+    return MODEL_DTYPE
 
 
 def _prepare_video_tensor(
@@ -158,7 +156,7 @@ def run_samples() -> None:
         PRETRAINED_MODEL,
         None,
         MODEL_NAME,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=MODEL_DTYPE,
         device_map=DEVICE_MAP,
     )
     model.eval()
