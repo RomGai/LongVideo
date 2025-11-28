@@ -55,7 +55,7 @@ MODEL_NAME = os.getenv("LLAVA_MODEL_NAME", "llava_qwen")
 DEVICE = os.getenv("LLAVA_DEVICE", "cuda")
 DEVICE_MAP = os.getenv("LLAVA_DEVICE_MAP", "auto")
 MAX_FRAMES = int(os.getenv("MAX_FRAMES", "64"))
-NUM_SAMPLES = int(os.getenv("NUM_SAMPLES", "3"))
+NUM_SAMPLES = int(os.getenv("NUM_SAMPLES", "8"))
 CONV_TEMPLATE = os.getenv("LLAVA_CONV_TEMPLATE", "qwen_1_5")
 
 
@@ -176,10 +176,14 @@ def run_samples() -> None:
         PRETRAINED_MODEL,
         None,
         MODEL_NAME,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map=DEVICE_MAP,
     )
     model.eval()
+
+    model = model.to(torch.bfloat16)
+    model_dtype=_get_model_dtype(model)
+    print(f"model dtype: {model_dtype}")
 
     dataset = LongVideoBenchDataset(output_root="./output", max_num_frames=MAX_FRAMES)
 
