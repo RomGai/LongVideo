@@ -13,6 +13,36 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 import torch
 from decord import cpu, VideoReader  # noqa: F401 (kept for parity with reference snippet)
+
+
+def _ensure_llava_compatibility() -> None:
+    """Backfill symbols expected by llava when using newer transformers.
+
+    Some llava distributions import ``apply_chunking_to_forward`` from
+    ``transformers.modeling_utils``. Newer versions of ``transformers`` have
+    moved this helper, causing an ImportError during llava import. We shim the
+    missing attribute to keep the script runnable without forcing a global
+    downgrade.
+    """
+
+    try:
+        from transformers import modeling_utils
+    except Exception:
+        return
+
+    if hasattr(modeling_utils, "apply_chunking_to_forward"):
+        return
+
+    try:
+        from transformers.pytorch_utils import apply_chunking_to_forward
+    except Exception:
+        return
+
+    modeling_utils.apply_chunking_to_forward = apply_chunking_to_forward
+
+
+_ensure_llava_compatibility()
+
 from llava.constants import DEFAULT_IMAGE_TOKEN, IMAGE_TOKEN_INDEX
 from llava.conversation import conv_templates
 from llava.model.builder import load_pretrained_model
